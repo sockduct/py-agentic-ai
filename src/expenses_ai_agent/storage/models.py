@@ -1,8 +1,17 @@
 # Standard Library:
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from enum import UNIQUE, StrEnum, verify
 
 # 3rd-Party Libraries:
-from sqlmodel import SQLModel
+from sqlmodel import Field, SQLModel
+
+# Constants
+TWOPLACES = Decimal("0.01")
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 @verify(UNIQUE)
@@ -19,9 +28,91 @@ class Currency(StrEnum):
     MXN = "MXN"
 
 
-class Expense(SQLModel):
-    pass
+def _currency_symbol(currency: Currency = Currency.EUR) -> str:
+    symbols = {
+        Currency.EUR: "€",
+        Currency.USD: "$",
+        Currency.GBP: "£",
+        Currency.JPY: "¥",
+        Currency.CHF: "Fr.",
+        Currency.CAD: "$",
+        Currency.AUD: "$",
+        Currency.CNY: "¥",
+        Currency.INR: "₹",
+        Currency.MXN: "$",
+    }
+    return symbols.get(currency, Currency.EUR)
 
 
+@verify(UNIQUE)
 class ExpenseCategory(StrEnum):
-    pass
+    FOOD = "Food"
+    TRANSPORT = "Transport"
+    ENTERTAINMENT = "Entertainment"
+    SHOPPING = "Shopping"
+    HEALTH = "Health"
+    BILLS = "Bills"
+    EDUCATION = "Education"
+    TRAVEL = "Travel"
+    SERVICES = "Services"
+    GIFTS = "Gifts"
+    INVESTMENTS = "Investments"
+    OTHER = "Other"
+
+
+class Expense(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    amount: Decimal
+    currency: Currency = Currency.EUR
+    description: str | None = None
+    date: datetime = Field(default_factory=_utc_now)
+    category: ExpenseCategory | None = None
+    telegram_user_id: int | None = None
+
+    def __repr__(self) -> str:
+        return (
+            f"Expense(id={self.id}, amount={self.amount}, currency={self.currency}, "
+            f"description={self.description}, date={self.date.isoformat()}, "
+            f"category={self.category}, telegram_user_id={self.telegram_user_id})"
+        )
+
+    def __str__(self) -> str:
+        return (
+            f"{_currency_symbol(self.currency)}{self.amount.quantize(TWOPLACES)} "
+            f"[{self.currency}] - {self.description or 'No description'} "
+            f"({self.category or 'Uncategorized'}) on "
+            f"{self.date.strftime('%a %b %d %Y, %I:%M%p %Z')}"
+        )
+
+    @classmethod
+    def create(
+        cls,
+        amount: Decimal = Decimal("0.00"),
+        currency: Currency = Currency.EUR,
+        description: str | None = None,
+        date: datetime | None = None,
+        category: ExpenseCategory | None = None,
+        telegram_user_id: int | None = None,
+    ) -> "Expense":
+        """Factory method to create an Expense with default values."""
+        if isinstance(amount, (int, float)):
+            amount = Decimal(str(amount))
+        elif isinstance(amount, str):
+            try:
+                amount = Decimal(amount)
+            except InvalidOperation as err:
+                raise ValueError(
+                    "Amount must be a valid number representing a currency amount."
+                ) from err
+        elif not isinstance(amount, Decimal):
+            raise ValueError(
+                "Amount must be a Decimal, int, float, or str representing a currency amount."
+            )
+        return cls(
+            amount=amount,
+            currency=currency,
+            description=description,
+            date=date or _utc_now(),
+            category=category,
+            telegram_user_id=telegram_user_id,
+        )
