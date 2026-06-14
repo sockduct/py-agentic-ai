@@ -12,6 +12,12 @@ dependencies = [
     "sqlmodel>=0.0.38",
 ]
 
+[tool.pyrefly]
+project-includes = [
+    "**/*.py*",
+    "**/*.ipynb",
+]
+
 [project.scripts]
 expenses-ai-agent = "expenses_ai_agent:main"
 
