@@ -53,16 +53,25 @@ the current directory.
 param(
     [Parameter(Position = 0)]
     [string]$Path = ".",
-    [string[]]$Exclude = @(".git", ".venv", ".ruff_cache", ".pytest_cache"),
+    [string[]]$Exclude,
     [string]$Prefix = ""
 )
+
+$script:DefaultTreeExcludes = @(
+    ".git", ".venv", ".ruff_cache", ".pytest_cache", ".mypy_cache", "__pycache__"
+)
+
+if (-not $PSBoundParameters.ContainsKey("Exclude")) {
+    $Exclude = $script:DefaultTreeExcludes
+    $PSBoundParameters["Exclude"] = $Exclude
+}
 
 function Show-Tree {
     [CmdletBinding()]
     param(
         [Parameter(Position = 0)]
         [string]$Path = ".",
-        [string[]]$Exclude = @(".git", ".venv", ".ruff_cache", ".pytest_cache"),
+        [string[]]$Exclude = $script:DefaultTreeExcludes,
         [string]$Prefix = ""
     )
 
