@@ -1,0 +1,41 @@
+[project]
+name = "expenses-ai-agent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "James Small", email = "james.r.small@outlook.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "python-decouple>=3.8",
+    "sqlmodel>=0.0.38",
+]
+
+[tool.pyrefly]
+project-includes = [
+    "**/*.py*",
+    "**/*.ipynb",
+]
+
+[project.scripts]
+expenses-ai-agent = "expenses_ai_agent:main"
+
+[build-system]
+requires = ["uv_build>=0.11.19,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "isort>=8.0.1",
+    "mypy>=2.1.0",
+    "pip>=26.1.2",
+    "pipdeptree>=3.1.0",
+    "prek>=0.4.4",
+    "ptpython>=3.0.32",
+    "pyrefly>=1.0.0",
+    "pytest>=9.0.3",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.15.16",
+    "ty>=0.0.45",
+]

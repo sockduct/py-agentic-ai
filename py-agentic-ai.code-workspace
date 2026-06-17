@@ -1,0 +1,19 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../py-agentic-ai-june2026"
+		}
+	],
+	"settings": {
+		"editor.formatOnSave": true,
+		"python.formatting.provider": "none",
+		"[python]": {
+			"editor.defaultFormatter": "charliermarsh.ruff"
+		},
+		"powershell.cwd": "py-agentic-ai",
+		"chat.disableAIFeatures": false
+	}
+}
