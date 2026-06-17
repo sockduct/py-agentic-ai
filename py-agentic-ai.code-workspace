@@ -13,6 +13,7 @@
 		"[python]": {
 			"editor.defaultFormatter": "charliermarsh.ruff"
 		},
-		"powershell.cwd": "py-agentic-ai"
+		"powershell.cwd": "py-agentic-ai",
+		"chat.disableAIFeatures": false
 	}
 }

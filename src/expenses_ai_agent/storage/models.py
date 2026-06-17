@@ -1,12 +1,9 @@
-# Standard Library:
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from enum import UNIQUE, StrEnum, verify
 
-# 3rd-Party Libraries:
 from sqlmodel import Field, SQLModel
 
-# Constants
 TWOPLACES = Decimal("0.01")
 
 
@@ -28,7 +25,10 @@ class Currency(StrEnum):
     MXN = "MXN"
 
 
-def _currency_symbol(currency: Currency = Currency.EUR) -> str:
+DEFAULT_CURRENCY: Currency = Currency.EUR
+
+
+def _currency_symbol(currency: Currency = DEFAULT_CURRENCY) -> str:
     symbols = {
         Currency.EUR: "€",
         Currency.USD: "$",
@@ -41,7 +41,7 @@ def _currency_symbol(currency: Currency = Currency.EUR) -> str:
         Currency.INR: "₹",
         Currency.MXN: "$",
     }
-    return symbols.get(currency, Currency.EUR)
+    return symbols.get(currency, DEFAULT_CURRENCY)
 
 
 @verify(UNIQUE)
@@ -63,7 +63,7 @@ class ExpenseCategory(StrEnum):
 class Expense(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     amount: Decimal
-    currency: Currency = Currency.EUR
+    currency: Currency = DEFAULT_CURRENCY
     description: str | None = None
     date: datetime = Field(default_factory=_utc_now)
     category: ExpenseCategory | None = None
@@ -88,31 +88,18 @@ class Expense(SQLModel, table=True):
     def create(
         cls,
         amount: Decimal = Decimal("0.00"),
-        currency: Currency = Currency.EUR,
+        currency: Currency = DEFAULT_CURRENCY,
         description: str | None = None,
         date: datetime | None = None,
         category: ExpenseCategory | None = None,
         telegram_user_id: int | None = None,
     ) -> "Expense":
         """Factory method to create an Expense with default values."""
-        if isinstance(amount, (int, float)):
-            amount = Decimal(str(amount))
-        elif isinstance(amount, str):
-            try:
-                amount = Decimal(amount)
-            except InvalidOperation as err:
-                raise ValueError(
-                    "Amount must be a valid number representing a currency amount."
-                ) from err
-        elif not isinstance(amount, Decimal):
-            raise ValueError(
-                "Amount must be a Decimal, int, float, or str representing a currency amount."
-            )
         return cls(
             amount=amount,
             currency=currency,
             description=description,
-            date=date or _utc_now(),
+            date=date if date is not None else _utc_now(),
             category=category,
             telegram_user_id=telegram_user_id,
         )

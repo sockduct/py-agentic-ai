@@ -35,6 +35,11 @@ class ExpenseRepository(ABC):
         """Remove an expense by its ID."""
         ...
 
+    @abstractmethod
+    def search_by_category(self, category: ExpenseCategory) -> list[Expense]:
+        """Search for expenses by defined categories."""
+        ...
+
 
 class InMemoryExpenseRepository(ExpenseRepository):
     """Needs to support CRUD and search"""
@@ -44,7 +49,7 @@ class InMemoryExpenseRepository(ExpenseRepository):
         self._next_id: int = 1
 
     def __repr__(self) -> str:
-        return f"InMemoryExpenseRepository({len(self._expenses)} expenses)"
+        return f"{self.__class__.__name__}({len(self._expenses)} expense(s))"
 
     def __str__(self) -> str:
         output = f"{self.__repr__()}:\n"
@@ -61,7 +66,10 @@ class InMemoryExpenseRepository(ExpenseRepository):
     def update(self, expense: Expense) -> None:
         """Update an expense in the repository."""
         if expense.id is None or expense.id not in self._expenses:
-            raise ValueError("Expense must have a valid ID to update.")
+            expense_id = str(expense.id) if expense.id is not None else "None"
+            raise ExpenseNotFoundError(
+                f"Expense with ID {expense_id} not found for update."
+            )
         self._expenses[expense.id] = expense
 
     def get(self, expense_id: int) -> Expense | None:
@@ -72,18 +80,11 @@ class InMemoryExpenseRepository(ExpenseRepository):
         """Retrieve all expenses."""
         return list(self._expenses.values())
 
-    # Note:  Renamed from list to list_all, otherwise get errors when type
-    #        annotating functions with a return type of list[Expense].
-    def list_all(self) -> list[Expense]:
-        """Alias for get_all to provide a more intuitive method name."""
-        return self.get_all()
-
     def delete(self, expense_id: int) -> None:
         """Remove an expense by its ID."""
-        if expense_id in self._expenses:
-            del self._expenses[expense_id]
-        else:
+        if expense_id not in self._expenses:
             raise ExpenseNotFoundError(f"Expense with ID {expense_id} not found.")
+        del self._expenses[expense_id]
 
     def search_by_category(self, category: ExpenseCategory) -> list[Expense]:
         """Search for expenses by defined categories."""
