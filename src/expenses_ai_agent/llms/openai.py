@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 from enum import UNIQUE, StrEnum, auto, verify
-from typing import cast
+from typing import Literal, cast
 
 from decouple import config
 from openai import OpenAI
@@ -104,12 +104,20 @@ class OpenAIAssistant:
             + completion_tokens * OUTPUT_RATE
         ).quantize(Decimal("0.00"))
 
-    def get_available_models(self, *, sort_by: SortBy = SortBy.NAME) -> list[str]:
+    def get_available_models(
+        self,
+        *,
+        sort_by: SortBy = SortBy.NAME,
+        direction: Literal["asc", "desc"] = "asc",
+    ) -> list[str]:
         """Provide sorted list of available models with creation dates."""
         response = self.client.models.list()
         sort_key = "created" if sort_by == SortBy.CREATION else "id"
+        reverse = direction == "desc"
         output = []
-        for model in sorted(response.data, key=lambda m: getattr(m, sort_key)):
+        for model in sorted(
+            response.data, key=lambda m: getattr(m, sort_key), reverse=reverse
+        ):
             dt_str = datetime.fromtimestamp(model.created).strftime("%b %d, %Y")
             output.append(f"{model.id:40} created on {dt_str}")
 

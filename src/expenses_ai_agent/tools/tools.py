@@ -5,7 +5,9 @@ CURRENCY_CONVERSION_TOOL — for convert_currency; amount, from_currency, to_cur
 DATETIME_FORMATTER_TOOL — for format_datetime; datetime_str is required, timezone_str is optional
 """
 
-CURRENCY_CONVERSION_TOOL: dict = {
+from openai.types.responses import FunctionToolParam
+
+CURRENCY_CONVERSION_TOOL: FunctionToolParam = {
     "type": "function",
     "name": "convert_currency",
     "description": "Provide up-to-date currency conversion.",
@@ -14,7 +16,7 @@ CURRENCY_CONVERSION_TOOL: dict = {
         "type": "object",
         "properties": {
             "amount": {
-                "type": "float",
+                "type": "number",
                 "description": "Numeric value of current currency.",
             },
             "from_currency": {
@@ -31,7 +33,7 @@ CURRENCY_CONVERSION_TOOL: dict = {
     },
 }
 
-DATETIME_FORMATTER_TOOL: dict = {
+DATETIME_FORMATTER_TOOL: FunctionToolParam = {
     "type": "function",
     "name": "format_datetime",
     "description": "Parse datetime string from ISO format including support for specified timezone",
@@ -44,11 +46,11 @@ DATETIME_FORMATTER_TOOL: dict = {
                 "description": "Date and time string in ISO 8601 format.",
             },
             "timezone_str": {
-                "type": "string",
+                "type": ["string", "null"],
                 "description": "Optional IANA Time Zone string for datetime_str.",
             },
         },
-        "required": ["datetime_str"],
+        "required": ["datetime_str", "timezone_str"],
         "additionalProperties": False,
     },
 }

@@ -5,7 +5,6 @@ from decouple import config
 
 from expenses_ai_agent.storage.models import Currency
 
-EXCHANGE_RATE_API_KEY = config("EXCHANGE_RATE_API_KEY")
 EXCHANGE_RATE_URL = (
     "https://v6.exchangerate-api.com/v6/{API_KEY}/pair/{from_currency}/{to_currency}"
 )
@@ -13,19 +12,21 @@ TIMEOUT = 3
 
 
 def convert_currency(
-    amount: Decimal, from_currency: str, to_currency: str, *, warn: bool = False
+    amount: Decimal,
+    *,
+    from_currency: Currency,
+    to_currency: Currency,
+    api_key: str | None = None,
 ) -> Decimal:
     """Provide up-to-date currency conversion."""
 
-    if warn and to_currency not in Currency:
-        print(f"Warning: {to_currency} not a supported currency.")
-
+    api_key = config("EXCHANGE_RATE_API_KEY") if api_key is None else api_key
     if from_currency == to_currency:
         return amount
 
     response = requests.get(
         EXCHANGE_RATE_URL.format(
-            API_KEY=EXCHANGE_RATE_API_KEY,
+            API_KEY=api_key,
             from_currency=from_currency,
             to_currency=to_currency,
         ),
