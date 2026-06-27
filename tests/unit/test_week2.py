@@ -168,7 +168,7 @@ class TestCurrencyConversion:
     def test_convert_currency_returns_decimal(self):
         """Currency conversion should return a Decimal value."""
         with (
-            patch("expenses_ai_agent.utils.currency.EXCHANGE_RATE_API_KEY", "test-key"),
+            patch("expenses_ai_agent.utils.currency.config", return_value="test-key"),
             patch("expenses_ai_agent.utils.currency.requests.get") as mock_get,
         ):
             mock_response = MagicMock()
@@ -179,20 +179,24 @@ class TestCurrencyConversion:
             mock_response.raise_for_status = MagicMock()
             mock_get.return_value = mock_response
 
-            result = convert_currency(Decimal("100"), "EUR", "USD")
+            result = convert_currency(
+                Decimal("100"), from_currency=Currency.EUR, to_currency=Currency.USD
+            )
 
             assert isinstance(result, Decimal)
 
     def test_convert_currency_same_currency(self):
         """Converting to the same currency should return the original amount."""
-        result = convert_currency(Decimal("50.00"), "EUR", "EUR")
+        result = convert_currency(
+            Decimal("50.00"), from_currency=Currency.EUR, to_currency=Currency.EUR
+        )
 
         assert result == Decimal("50.00")
 
     def test_convert_currency_applies_rate(self):
         """Conversion should apply the exchange rate correctly."""
         with (
-            patch("expenses_ai_agent.utils.currency.EXCHANGE_RATE_API_KEY", "test-key"),
+            patch("expenses_ai_agent.utils.currency.config", return_value="test-key"),
             patch("expenses_ai_agent.utils.currency.requests.get") as mock_get,
         ):
             mock_response = MagicMock()
@@ -203,7 +207,9 @@ class TestCurrencyConversion:
             mock_response.raise_for_status = MagicMock()
             mock_get.return_value = mock_response
 
-            result = convert_currency(Decimal("100"), "EUR", "USD")
+            result = convert_currency(
+                Decimal("100"), from_currency=Currency.EUR, to_currency=Currency.USD
+            )
 
             assert result == Decimal("150")
 

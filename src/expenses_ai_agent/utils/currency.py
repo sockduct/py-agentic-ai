@@ -35,7 +35,8 @@ def convert_currency(
     # Note:  If pass an invalid/unsupported currency, will get HTTPError/404:
     response.raise_for_status()
 
-    if rate := response.json().get("conversion_rate"):
+    try:
+        rate = response.json()["conversion_rate"]
         return (amount * Decimal(str(rate))).quantize(Decimal("0.00"))
-    else:
-        raise LookupError("Unable to obtain exchange rate.")
+    except KeyError as err:
+        raise LookupError("Unable to obtain exchange rate.") from err
