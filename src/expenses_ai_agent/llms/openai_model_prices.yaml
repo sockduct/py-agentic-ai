@@ -1,0 +1,74 @@
+schema_version: 1
+provider: openai
+prices_confirmed_at: "2026-06-24"
+source_url: "https://developers.openai.com/api/docs/pricing"
+notes:
+  - "Incomplete (WIP) - future work..."
+  - "Use decimal strings, not floats."
+  - "Regional processing/data residency may add uplift where applicable."
+  - title: "Token Types:"
+    items:
+    - "input tokens (aka prompt_tokens)"
+    - "cached input tokens"
+    - "output tokens (aka completion_tokens)"
+    - title: "Reasoning Tokens"
+      items:
+      - "Reasoning tokens are a subset of output tokens showing how many were used for reasoning"
+      - title: "Track reasoning tokens for:"
+        items:
+        - "Explaining why a short visible answer still cost more than expected"
+        - "Monitoring whether reasoning.effort is too high"
+        - "Tuning latency and budget"
+        - "Alerting on requests where hidden reasoning dominates output"
+        - "Understanding why max_output_tokens was exhausted, since reasoning tokens consume output budget too"
+    - "total tokens"
+    - title: "tool usage tokens"
+      items:
+      - "Not currently calculating tool costs"
+      - "Could start by inspecting tool_usage which may contain token consumption details"
+  - title: "Token cost calculations:"
+    items:
+    - "non_cached_input = input_tokens - cached_tokens"
+    - "estimated_cost = non_cached_input / 1_000_000 * input_rate + cached_tokens / 1_000_000 * cached_input_rate + output_tokens / 1_000_000 * output_rate + tool_costs"
+
+models:
+  - model: "gpt-5.4"
+    model_created_at: "..." # from /v1/models created timestamp
+    model_created_unix: 0
+    currency: "USD"
+    unit: "1M_tokens"
+    rates:
+      standard:
+        short_context:
+          input: "2.50"
+          cached_input: "0.25"
+          output: "15.00"
+          cutoff: "<272K_tokens"
+        long_context:
+          input: "5.00"
+          cached_input: "0.50"
+          output: "22.50"
+          cutoff: ">272K_tokens"
+      batch:
+        short_context:
+          input: "1.25"
+          cached_input: "0.13"
+          output: "7.50"
+          cutoff: "<272K_tokens"
+        long_context:
+          input: "2.50"
+          cached_input: "0.25"
+          output: "11.25"
+          cutoff: ">272K_tokens"
+  - model: "gpt-4o-mini"
+    model_created_at: "..." # from /v1/models created timestamp
+    model_created_unix: 0
+    currency: "USD"
+    unit: "1M_tokens"
+    rates:
+      standard:
+        short_context:
+          input: "0.15"
+          cached_input: "0.075"
+          output: "0.60"
+          cutoff: "N/A"
