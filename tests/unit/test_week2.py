@@ -6,8 +6,10 @@ from typing import Protocol  # used in test_assistant_protocol_exists assertion 
 from unittest.mock import MagicMock, patch
 
 from pydantic import BaseModel
+from pytest import raises
 
 from expenses_ai_agent.llms.base import COST, MESSAGES, Assistant, LLMProvider
+from expenses_ai_agent.llms.exceptions import ResponseError
 from expenses_ai_agent.llms.openai import OpenAIAssistant
 from expenses_ai_agent.llms.output import ExpenseCategorizationResponse
 from expenses_ai_agent.storage.models import Currency
@@ -17,6 +19,10 @@ from expenses_ai_agent.tools.tools import (
 )
 from expenses_ai_agent.utils.currency import convert_currency
 from expenses_ai_agent.utils.date_formatter import format_datetime
+from expenses_ai_agent.utils.exceptions import (
+    InvalidDateTimeError,
+    InvalidTimeZoneError,
+)
 
 
 class TestExpenseCategorizationResponse:
@@ -234,6 +240,11 @@ class TestDateFormatter:
         assert "2024" in result or "24" in result
         assert "Jun" in result or "06" in result or "6" in result
 
+    def test_format_datetime_with_invalid_date(self):
+        """Invalid date should raise InvalidDateError."""
+        with raises(InvalidDateTimeError):
+            format_datetime("invalid-date")
+
     def test_format_datetime_with_timezone(self):
         """Should support timezone conversion."""
         result = format_datetime(
@@ -241,6 +252,13 @@ class TestDateFormatter:
         )
 
         assert isinstance(result, str)
+
+    def test_format_datetime_with_invalid_timezone(self):
+        """Invalid timezone should raise InvalidTimeZoneError."""
+        with raises(InvalidTimeZoneError):
+            format_datetime(
+                "2024-06-15T12:00:00+00:00", timezone_str="invalid-timezone"
+            )
 
 
 class TestToolSchemas:
@@ -323,6 +341,17 @@ class TestOpenAIAssistant:
             cost = assistant.calculate_cost(100, 50)
             assert isinstance(cost, Decimal)
 
+    def test_calculate_cost_returns_correct_amount(self):
+        """calculate_cost should return the correct amount for gpt-4o-mini."""
+        with patch("expenses_ai_agent.llms.openai.OpenAI"):
+            assistant = OpenAIAssistant(model="gpt-4o-mini", api_key="test-key")
+            cost = assistant.calculate_cost(
+                prompt_tokens=3_500_000,
+                completion_tokens=5_500_000,
+                cached_prompt_tokens=500_000,
+            )
+            assert cost == Decimal("3.79")
+
     def test_completion_calls_openai_and_returns_response(self):
         """completion should call the OpenAI API and return ExpenseCategorizationResponse."""
         # MagicMock is used here (not create_autospec) because the OpenAI SDK's
@@ -362,3 +391,26 @@ class TestOpenAIAssistant:
             # mock_client.beta.chat.completions.parse.assert_called_once()
             # Replacement responses API:
             mock_client.responses.parse.assert_called_once()
+
+    def test_completion_calls_openai_and_handles_parse_error(self):
+        """check completion handles parse error"""
+        with patch("expenses_ai_agent.llms.openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_openai_cls.return_value = mock_client
+
+            mock_response = MagicMock()
+            mock_response.output_parsed = None
+            mock_response.status = "failed"
+            mock_response.error = "Error processing request."
+            mock_response.incomplete_details = "Unable to fully process the request."
+            mock_client.responses.parse.return_value = mock_response
+
+            assistant = OpenAIAssistant(model="gpt-4o-mini", api_key="test-key")
+            messages = [{"role": "user", "content": "Coffee $5.50"}]
+
+            with raises(ResponseError) as err:
+                assistant.completion(messages)
+
+            error_message = str(err.value)
+            assert "Error processing request." in error_message
+            assert "Unable to fully process the request." in error_message
