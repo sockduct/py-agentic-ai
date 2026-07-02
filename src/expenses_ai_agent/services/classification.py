@@ -29,7 +29,7 @@ class ClassificationService:
         messages = self._build_messages(expense_description)
         response = self.assistant.completion(messages)
 
-        if persist and self.expense_repo:
+        if persist and self.expense_repo is not None:
             self._persist_expense(expense_description, response)
 
         return ClassificationResult(response=response, persisted=persist)

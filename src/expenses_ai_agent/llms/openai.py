@@ -44,15 +44,12 @@ class OpenAIAssistant:
         Call OpenAI new responses API leveraging structured output
         Use token counts to calculate cost
         """
-        try:
-            response = self.client.responses.parse(
-                model=self.model,
-                store=self.store,
-                input=cast(ResponseInputParam, messages),
-                text_format=ExpenseCategorizationResponse,
-            )
-        except Exception as err:
-            raise ResponseError(f"Failed to parse response from OpenAI: {err}") from err
+        response = self.client.responses.parse(
+            model=self.model,
+            store=self.store,
+            input=cast(ResponseInputParam, messages),
+            text_format=ExpenseCategorizationResponse,
+        )
 
         # Should see output_parsed populated for response success case:
         if response.output_parsed is None:
