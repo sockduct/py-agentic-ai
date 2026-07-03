@@ -5,7 +5,6 @@ from expenses_ai_agent.llms.output import ExpenseCategorizationResponse
 from expenses_ai_agent.prompts.system import CLASSIFICATION_PROMPT
 from expenses_ai_agent.prompts.user import USER_PROMPT
 from expenses_ai_agent.services.exceptions import MissingRepositoryError
-from expenses_ai_agent.storage.exceptions import InvalidExpenseCategory
 from expenses_ai_agent.storage.models import Expense, ExpenseCategory
 from expenses_ai_agent.storage.repo import ExpenseRepository
 
@@ -37,14 +36,9 @@ class ClassificationService:
     def persist_with_category(
         self,
         expense_description: str,
-        category_name: str,
+        category_name: ExpenseCategory,
         response: ExpenseCategorizationResponse,
     ) -> None:
-        # For human-in-the-loop: user corrects the classification
-        if category_name.lower() not in [e.value.lower() for e in ExpenseCategory]:
-            raise InvalidExpenseCategory(
-                f"{category_name} not a valid expense category."
-            )
         response.category = ExpenseCategory(category_name.capitalize())
         self._persist_expense(expense_description, response)
 
