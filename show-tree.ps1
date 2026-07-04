@@ -58,7 +58,7 @@ param(
 )
 
 $script:DefaultTreeExcludes = @(
-    ".git", ".venv", ".ruff_cache", ".pytest_cache", ".mypy_cache", "__pycache__"
+    ".agents", ".git", ".mypy_cache", "__pycache__", ".pytest_cache", ".ruff_cache", ".venv"
 )
 
 if (-not $PSBoundParameters.ContainsKey("Exclude")) {

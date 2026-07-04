@@ -51,6 +51,7 @@ class OpenAIAssistant:
             text_format=ExpenseCategorizationResponse,
         )
 
+        # Should see output_parsed populated for response success case:
         if response.output_parsed is None:
             output = f"status={response.status}"
             # Should see error populated for response failure case:
@@ -69,7 +70,11 @@ class OpenAIAssistant:
             cost = self.calculate_cost(
                 response.usage.input_tokens,
                 response.usage.output_tokens,
-                cached_prompt_tokens=response.usage.input_tokens_details.cached_tokens,
+                cached_prompt_tokens=(
+                    response.usage.input_tokens_details.cached_tokens
+                    if response.usage.input_tokens_details is not None
+                    else 0
+                ),
             )
 
             expcat_resp.cost = cost

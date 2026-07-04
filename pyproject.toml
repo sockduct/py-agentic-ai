@@ -12,7 +12,9 @@ dependencies = [
     "python-decouple>=3.8",
     "pyyaml>=6.0.3",
     "requests>=2.34.2",
+    "rich>=15.0.0",
     "sqlmodel>=0.0.38",
+    "typer>=0.26.8",
     "types-requests>=2.33.0.20260518",
     "tzdata>=2026.2",
 ]
@@ -24,7 +26,7 @@ project-includes = [
 ]
 
 [project.scripts]
-expenses-ai-agent = "expenses_ai_agent:main"
+expenses-ai-agent = "expenses_ai_agent.cli.cli:app"
 
 [build-system]
 requires = ["uv_build>=0.11.19,<0.12.0"]
