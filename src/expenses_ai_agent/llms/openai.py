@@ -70,7 +70,11 @@ class OpenAIAssistant:
             cost = self.calculate_cost(
                 response.usage.input_tokens,
                 response.usage.output_tokens,
-                cached_prompt_tokens=response.usage.input_tokens_details.cached_tokens,
+                cached_prompt_tokens=(
+                    response.usage.input_tokens_details.cached_tokens
+                    if response.usage.input_tokens_details is not None
+                    else 0
+                ),
             )
 
             expcat_resp.cost = cost

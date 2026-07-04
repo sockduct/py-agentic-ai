@@ -155,6 +155,9 @@ class TestClassificationService:
 
         assert result.persisted is True
         mock_expense_repo.add.assert_called_once()
+        added = mock_expense_repo.add.call_args[0][0]
+        assert added.amount == Decimal("5.50")
+        assert added.category == ExpenseCategory.FOOD
 
     def test_persist_with_category_override(self, mock_assistant, mock_expense_repo):
         service = ClassificationService(
