@@ -30,6 +30,7 @@ console = Console()
 def classify(
     description: str = typer.Argument(..., help="Expense description to classify"),
     db: bool = typer.Option(False, "--db", help="Persist to database"),
+    verbose: bool = typer.Option(False, "-v", help="Verbose output"),
 ):
     """Classify an expense using AI."""
     ### The try/except needs to go in for "production" - however; I keep getting
@@ -45,7 +46,7 @@ def classify(
         result = service.classify(description, persist=False)
 
     # Display results
-    _display_result(result)
+    _display_result(result, verbose=verbose)
     """
     except (OpenAIError, ValidationError) as err:
         console.print(f"[red]Error: {err}[/red]")
@@ -60,7 +61,7 @@ def _build_service(
     return ClassificationService(assistant=assistant, expense_repo=expense_repo)
 
 
-def _display_result(result: ClassificationResult) -> None:
+def _display_result(result: ClassificationResult, *, verbose: bool = False) -> None:
     table = Table(title="Classification Result")
     table.add_column("Field", style="cyan")
     table.add_column("Value", style="green")
@@ -70,6 +71,10 @@ def _display_result(result: ClassificationResult) -> None:
     table.add_row("Amount", f"{response.total_amount}")
     table.add_row("Currency", response.currency)
     table.add_row("Confidence", f"{response.confidence:.0%}")
+    if verbose:
+        if response.comments:
+            table.add_row("Cost", f"{response.comments}")
+        table.add_row("Timestamp", f"{response.timestamp:%Y-%m-%d %H:%M:%S}")
     table.add_row("Persisted", "Yes" if result.persisted else "No")
 
     console.print(table)
