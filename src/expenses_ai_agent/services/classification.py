@@ -43,8 +43,14 @@ class ClassificationService:
         category_name: ExpenseCategory,
         response: ExpenseCategorizationResponse,
     ) -> None:
-        response.category = ExpenseCategory(category_name.capitalize())
-        self._persist_expense(expense_description, response)
+        updated_response = ExpenseCategorizationResponse(
+            category=category_name,
+            total_amount=response.total_amount,
+            currency=response.currency,
+            confidence=response.confidence,
+            cost=response.cost,
+        )
+        self._persist_expense(expense_description, updated_response)
 
     def _build_messages(self, expense_description: str) -> MESSAGES:
         return [

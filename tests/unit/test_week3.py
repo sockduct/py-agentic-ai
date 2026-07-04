@@ -382,7 +382,8 @@ class TestCLIApp:
 
             with patch("expenses_ai_agent.cli.cli.OpenAIAssistant"):
                 result = cli_runner.invoke(app, ["Coffee at Starbucks $5.50"])
-                assert result.exit_code == 0 or "Food" in result.output
+                assert result.exit_code == 0
+                assert "Food" in result.output
 
     def test_classify_db_option_exists(self, cli_runner):
         result = cli_runner.invoke(app, ["classify", "--help"])
