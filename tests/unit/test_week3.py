@@ -278,6 +278,7 @@ class TestDBExpenseRepo:
         repo = DBExpenseRepo(db_url="sqlite:///:memory:", session=db_session)
 
         now = datetime.now(timezone.utc)
+        slight_future = now + timedelta(seconds=1)
         yesterday = now - timedelta(days=1)
         last_week = now - timedelta(days=7)
 
@@ -286,7 +287,8 @@ class TestDBExpenseRepo:
         repo.add(Expense(amount=Decimal("30"), currency=Currency.EUR, date=last_week))
 
         start = now - timedelta(days=3)
-        results = repo.search_by_dates(start, now)
+        # Search by dates is >= start and < end:
+        results = repo.search_by_dates(start, slight_future)
 
         assert len(results) == 2
 
@@ -305,6 +307,30 @@ class TestDBExpenseRepo:
 
         user_100_expenses = repo.list_by_user(telegram_user_id=100)
         assert len(user_100_expenses) == 2
+
+    def test_db_expense_repo_owned_session_requires_context_manager(self):
+        repo = DBExpenseRepo(db_url="sqlite:///:memory:")
+
+        with pytest.raises(RuntimeError, match="must be used as a context manager"):
+            repo.get_all()
+
+        repo.close()
+
+    def test_db_expense_repo_creates_own_session_with_context_manager(self):
+        with DBExpenseRepo(db_url="sqlite:///:memory:") as repo:
+            expense = Expense(
+                amount=Decimal("12.34"),
+                currency=Currency.USD,
+                description="Own session",
+            )
+
+            repo.add(expense)
+            assert expense.id is not None
+
+            result = repo.get(expense.id)
+            assert result is not None
+            assert result.amount == Decimal("12.34")
+            assert repo._owns_session is True
 
 
 @pytest.fixture

@@ -1,8 +1,9 @@
 from abc import ABC, abstractmethod
 from datetime import datetime
+from types import TracebackType
 
 from sqlalchemy import func
-from sqlmodel import Session, SQLModel, col, create_engine, select
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from expenses_ai_agent.storage.exceptions import ExpenseNotFoundError
 from expenses_ai_agent.storage.models import Expense, ExpenseCategory
@@ -110,7 +111,7 @@ class InMemoryExpenseRepository(ExpenseRepository):
         return [
             expense
             for expense in self._expenses.values()
-            if start <= expense.date <= end
+            if start <= expense.date < end
         ]
 
     def list_by_user(self, telegram_user_id: int) -> list[Expense]:
@@ -129,34 +130,65 @@ class DBExpenseRepo(ExpenseRepository):
         if session is not None:
             self._session = session
             self._owns_session = False
+            self._entered_context = True
         else:
             engine = create_engine(db_url)
             SQLModel.metadata.create_all(
                 engine
             )  # ensures the table exists in production
-            self.session = Session(engine)
+            self._session = Session(engine)
             self._owns_session = True
+            self._entered_context = False
+
+    def __enter__(self) -> DBExpenseRepo:
+        self._entered_context = True
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    def __len__(self) -> int:
+        self._ensure_usable()
+        statement = select(func.count()).select_from(Expense)
+        return self._session.exec(statement).one()
 
     def __repr__(self) -> str:
-        statement = select(func.count()).select_from(Expense)
-        count = self._session.exec(statement).one()
-        return f"{self.__class__.__name__}({count} expense(s))"
+        state = "open" if self._entered_context else "closed"
+        return f"{self.__class__.__name__}(state={state})"
 
     def __str__(self) -> str:
-        output = f"{self.__repr__()}:\n"
-        for rownum, element in enumerate(self.get_all(), start=1):
-            output += f"{rownum}: {element}\n"
-        return output
+        self._ensure_usable()
+        return "\n".join(
+            f"{rownum}: {element}"
+            for rownum, element in enumerate(self.get_all(), start=1)
+        )
+
+    def _ensure_usable(self) -> None:
+        if self._owns_session and not self._entered_context:
+            raise RuntimeError(
+                "DBExpenseRepo created without a session must be used as a context manager."
+            )
 
     def add(self, expense: Expense) -> None:
         """Add an expense to the repository."""
+        self._ensure_usable()
         self._session.add(expense)
         self._session.commit()
         self._session.refresh(expense)
 
+    def close(self) -> None:
+        if self._owns_session:
+            self._session.close()
+            self._entered_context = False
+
     def update(self, expense: Expense) -> None:
         """Update an expense in the repository."""
-        if expense.id is None or not self.get(expense.id):
+        if expense.id is None or self.get(expense.id) is None:
             raise ExpenseNotFoundError(
                 f"Expense with ID {expense.id} not found for update."
             )
@@ -164,31 +196,37 @@ class DBExpenseRepo(ExpenseRepository):
 
     def get(self, expense_id: int) -> Expense | None:
         """Retrieve an expense by its ID."""
+        self._ensure_usable()
         return self._session.get(Expense, expense_id)
 
     def get_all(self) -> list[Expense]:
         """Retrieve all expenses."""
+        self._ensure_usable()
         statement = select(Expense)
         return list(self._session.exec(statement))
 
     def delete(self, expense_id: int) -> None:
         """Remove an expense by its ID."""
-        if not (expense := self.get(expense_id)):
+        if (expense := self.get(expense_id)) is None:
             raise ExpenseNotFoundError(f"Expense with ID {expense_id} not found.")
+        self._ensure_usable()
         self._session.delete(expense)
         self._session.commit()
 
     def search_by_category(self, category: ExpenseCategory) -> list[Expense]:
         """Search for expenses by defined categories."""
+        self._ensure_usable()
         statement = select(Expense).where(Expense.category == category)
         return list(self._session.exec(statement))
 
     def search_by_dates(self, start: datetime, end: datetime) -> list[Expense]:
         """Search for expenses by defined dates."""
-        statement = select(Expense).where(col(Expense.date).between(start, end))
+        self._ensure_usable()
+        statement = select(Expense).where(Expense.date >= start, Expense.date < end)
         return list(self._session.exec(statement))
 
     def list_by_user(self, telegram_user_id: int) -> list[Expense]:
         """Search for expenses by defined user."""
+        self._ensure_usable()
         statement = select(Expense).where(Expense.telegram_user_id == telegram_user_id)
         return list(self._session.exec(statement))
