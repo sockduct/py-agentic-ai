@@ -177,6 +177,7 @@ class TestClassificationService:
             expense_description="Movie snacks",
             category_name="Entertainment",
             response=response,
+            telegram_user_id=99,
         )
 
         mock_expense_repo.add.assert_called_once()
