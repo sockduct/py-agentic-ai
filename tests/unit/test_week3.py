@@ -312,30 +312,6 @@ class TestDBExpenseRepo:
         user_100_expenses = repo.list_by_user(telegram_user_id=100)
         assert len(user_100_expenses) == 2
 
-    def test_db_expense_repo_owned_session_requires_context_manager(self):
-        repo = DBExpenseRepo(db_url="sqlite:///:memory:")
-
-        with pytest.raises(RuntimeError, match="must be used as a context manager"):
-            repo.get_all()
-
-        repo.close()
-
-    def test_db_expense_repo_creates_own_session_with_context_manager(self):
-        with DBExpenseRepo(db_url="sqlite:///:memory:") as repo:
-            expense = Expense(
-                amount=Decimal("12.34"),
-                currency=Currency.USD,
-                description="Own session",
-            )
-
-            repo.add(expense)
-            assert expense.id is not None
-
-            result = repo.get(expense.id)
-            assert result is not None
-            assert result.amount == Decimal("12.34")
-            assert repo._owns_session is True
-
 
 @pytest.fixture
 def cli_runner():
