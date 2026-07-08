@@ -15,6 +15,7 @@ from expenses_ai_agent.services.classification import (
     ClassificationResult,
     ClassificationService,
 )
+from expenses_ai_agent.services.exceptions import MissingRepositoryError
 from expenses_ai_agent.storage.exceptions import ExpenseNotFoundError
 from expenses_ai_agent.storage.models import Currency, Expense, ExpenseCategory
 from expenses_ai_agent.storage.repo import DBExpenseRepo, ExpenseRepository
@@ -159,6 +160,12 @@ class TestClassificationService:
         assert added.amount == Decimal("5.50")
         assert added.category == ExpenseCategory.FOOD
 
+    def test_classify_with_persistence_requires_repository(self, mock_assistant):
+        service = ClassificationService(assistant=mock_assistant)
+
+        with pytest.raises(MissingRepositoryError, match="no repository provided"):
+            service.classify("Coffee $5.50", persist=True)
+
     def test_persist_with_category_override(self, mock_assistant, mock_expense_repo):
         service = ClassificationService(
             assistant=mock_assistant,
@@ -182,6 +189,23 @@ class TestClassificationService:
 
         mock_expense_repo.add.assert_called_once()
 
+    def test_persist_with_category_requires_repository(self, mock_assistant):
+        service = ClassificationService(assistant=mock_assistant)
+        response = ExpenseCategorizationResponse(
+            category="Food",
+            total_amount=Decimal("10.00"),
+            currency=Currency.EUR,
+            confidence=0.6,
+            cost=Decimal("0.001"),
+        )
+
+        with pytest.raises(MissingRepositoryError, match="no repository provided"):
+            service.persist_with_category(
+                expense_description="Movie snacks",
+                category_name=ExpenseCategory.ENTERTAINMENT,
+                response=response,
+            )
+
     def test_service_builds_correct_messages(self, mock_assistant):
         service = ClassificationService(assistant=mock_assistant)
         service.classify("Test expense")
@@ -198,7 +222,10 @@ class TestClassificationService:
 def db_engine():
     engine = create_engine("sqlite:///:memory:")
     SQLModel.metadata.create_all(engine)
-    return engine
+    try:
+        yield engine
+    finally:
+        engine.dispose()
 
 
 @pytest.fixture
@@ -233,6 +260,14 @@ class TestDBExpenseRepo:
 
         expenses = repo.get_all()
         assert len(expenses) == 2
+
+    def test_db_expense_repo_len_with_injected_session(self, db_session):
+        repo = DBExpenseRepo(db_url="sqlite:///:memory:", session=db_session)
+
+        repo.add(Expense(amount=Decimal("10.00"), currency=Currency.EUR))
+        repo.add(Expense(amount=Decimal("20.00"), currency=Currency.USD))
+
+        assert len(repo) == 2
 
     def test_db_expense_repo_delete(self, db_session):
         repo = DBExpenseRepo(db_url="sqlite:///:memory:", session=db_session)
@@ -312,6 +347,104 @@ class TestDBExpenseRepo:
         user_100_expenses = repo.list_by_user(telegram_user_id=100)
         assert len(user_100_expenses) == 2
 
+    @pytest.fixture
+    def owned_repo(self):
+        repo = DBExpenseRepo(db_url="sqlite:///:memory:")
+        try:
+            yield repo
+        finally:
+            repo.close()
+
+    def test_db_expense_repo_owned_session_add_get_len_and_str(self, owned_repo):
+        expense = Expense(
+            amount=Decimal("42.50"),
+            currency=Currency.EUR,
+            description="Owned session",
+            category=ExpenseCategory.FOOD,
+        )
+
+        owned_repo.add(expense)
+
+        assert expense.id is not None
+        assert len(owned_repo) == 1
+        assert "sqlite" in repr(owned_repo)
+        assert "Owned session" in str(owned_repo)
+
+        result = owned_repo.get(expense.id)
+        assert result is not None
+        assert result.amount == Decimal("42.50")
+
+        all_expenses = owned_repo.get_all()
+        assert len(all_expenses) == 1
+
+    def test_db_expense_repo_owned_session_update_and_delete(self, owned_repo):
+        expense = Expense(
+            amount=Decimal("15.00"),
+            currency=Currency.EUR,
+            description="Initial",
+            category=ExpenseCategory.FOOD,
+        )
+        owned_repo.add(expense)
+        expense_id = expense.id
+
+        expense.description = "Updated"
+        owned_repo.update(expense)
+
+        updated = owned_repo.get(expense_id)
+        assert updated is not None
+        assert updated.description == "Updated"
+
+        owned_repo.delete(expense_id)
+        assert owned_repo.get(expense_id) is None
+
+    def test_db_expense_repo_owned_session_update_missing_raises(self, owned_repo):
+        with pytest.raises(ExpenseNotFoundError):
+            owned_repo.update(Expense(id=999, amount=Decimal("10.00")))
+
+    def test_db_expense_repo_owned_session_searches(self, owned_repo):
+        now = datetime.now(timezone.utc)
+        yesterday = now - timedelta(days=1)
+        last_week = now - timedelta(days=7)
+
+        owned_repo.add(
+            Expense(
+                amount=Decimal("10"),
+                currency=Currency.EUR,
+                date=now,
+                category=ExpenseCategory.FOOD,
+                telegram_user_id=100,
+            )
+        )
+        owned_repo.add(
+            Expense(
+                amount=Decimal("20"),
+                currency=Currency.EUR,
+                date=yesterday,
+                category=ExpenseCategory.FOOD,
+                telegram_user_id=100,
+            )
+        )
+        owned_repo.add(
+            Expense(
+                amount=Decimal("30"),
+                currency=Currency.EUR,
+                date=last_week,
+                category=ExpenseCategory.TRANSPORT,
+                telegram_user_id=200,
+            )
+        )
+
+        food_expenses = owned_repo.search_by_category(ExpenseCategory.FOOD)
+        recent_expenses = owned_repo.search_by_dates(
+            start=now - timedelta(days=3),
+            end=now + timedelta(seconds=1),
+        )
+        user_expenses = owned_repo.list_by_user(telegram_user_id=100)
+
+        assert len(food_expenses) == 2
+        assert len(recent_expenses) == 2
+        assert len(user_expenses) == 2
+
 
 @pytest.fixture
 def cli_runner():
@@ -381,3 +514,22 @@ class TestCLIApp:
                 result = cli_runner.invoke(app, ["Test expense"])
                 output = result.output
                 assert "Food" in output or "5.50" in output or "Category" in output
+
+    def test_cli_verbose_outputs_comments(
+        self, cli_runner, mock_classification_response
+    ):
+        with patch(
+            "expenses_ai_agent.cli.cli.ClassificationService"
+        ) as mock_service_cls:
+            mock_service = create_autospec(ClassificationService)
+            mock_result = create_autospec(ClassificationResult)
+            mock_result.response = mock_classification_response
+            mock_result.persisted = False
+            mock_service.classify.return_value = mock_result
+            mock_service_cls.return_value = mock_service
+
+            with patch("expenses_ai_agent.cli.cli.OpenAIAssistant"):
+                result = cli_runner.invoke(app, ["Test expense", "--verbose"])
+
+        assert result.exit_code == 0
+        assert "Coffee purchase" in result.output
