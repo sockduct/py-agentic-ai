@@ -38,7 +38,8 @@ def classify(
     ### to fix it.  Once all issues are robustly addressed, I will add it back.
     ### try:
     service = _build_service(db=db)
-    result = service.classify(description, persist=db)
+    with service:
+        result = service.classify(description, persist=db)
 
     # Display results
     _display_result(result, verbose=verbose)

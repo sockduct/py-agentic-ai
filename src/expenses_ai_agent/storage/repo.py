@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
 from datetime import datetime
+from types import TracebackType
+from warnings import warn
 
 from sqlalchemy import func
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -137,6 +139,25 @@ class DBExpenseRepo(ExpenseRepository):
             self._owns_session = True
 
     def __del__(self) -> None:
+        try:
+            self.close()
+        except AttributeError:
+            pass  # __init__ failed before attributes were set
+
+    def __enter__(self) -> DBExpenseRepo:
+        warn(
+            f"Context manager protocol is deprecated for {self.__class__.__name__} "
+            "- call close() explicitly.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if not self._owns_session:
+            raise RuntimeError("Cannot manage external session!")
+        return self
+
+    def __exit__(
+        self, exc_type: type[Exception], exc_value: Exception, tb: TracebackType
+    ) -> None:
         self.close()
 
     def __len__(self) -> int:
@@ -147,7 +168,14 @@ class DBExpenseRepo(ExpenseRepository):
         return self._session.exec(statement).one()
 
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(name={self._engine.name})"
+        if self._owns_session and hasattr(self._engine, "url"):
+            db_url = self._engine.url
+        elif hasattr(self._session, "bind") and hasattr(self._session.bind, "url"):
+            db_url = self._session.bind.url
+        else:
+            db_url = "unknown"
+
+        return f"{self.__class__.__name__}(db_url={db_url})"
 
     def __str__(self) -> str:
         return "\n".join(
@@ -168,8 +196,9 @@ class DBExpenseRepo(ExpenseRepository):
             self._session.refresh(expense)
 
     def close(self) -> None:
-        if self._owns_session:
+        if getattr(self, "_owns_session", False):
             self._engine.dispose()
+            self._owns_session = False  # idempotent guard
 
     def update(self, expense: Expense) -> None:
         """Update an expense in the repository."""

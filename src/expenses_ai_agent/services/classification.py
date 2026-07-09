@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from types import TracebackType
 
 from expenses_ai_agent.llms.base import MESSAGES, Assistant
 from expenses_ai_agent.llms.output import ExpenseCategorizationResponse
@@ -19,6 +20,15 @@ class ClassificationResult:
 class ClassificationService:
     assistant: Assistant
     expense_repo: ExpenseRepository | None = None
+
+    def __enter__(self) -> "ClassificationService":
+        return self
+
+    def __exit__(
+        self, exc_type: type[Exception], exc_value: Exception, tb: TracebackType
+    ):
+        if hasattr(self.expense_repo, "close"):
+            self.expense_repo.close()
 
     def classify(
         self,
