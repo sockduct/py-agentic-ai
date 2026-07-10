@@ -445,6 +445,39 @@ class TestDBExpenseRepo:
         assert len(recent_expenses) == 2
         assert len(user_expenses) == 2
 
+    def test_db_expense_repo_update_with_owned_session(self, owned_repo):
+        """update() should work when the repo owns its session (detached object round-trip)."""
+        expense = Expense(amount=Decimal("10.00"), currency=Currency.EUR)
+        owned_repo.add(expense)
+        expense.amount = Decimal("20.00")
+        owned_repo.update(expense)
+        result = owned_repo.get(expense.id)
+        assert result is not None
+        assert result.amount == Decimal("20.00")
+        owned_repo.close()
+
+    def test_db_expense_repo_delete_with_owned_session(self, owned_repo):
+        """delete() should work when the repo owns its session (detached object)."""
+        expense = Expense(amount=Decimal("10.00"), currency=Currency.EUR)
+        owned_repo.add(expense)
+        owned_repo.delete(expense.id)
+        assert owned_repo.get(expense.id) is None
+        owned_repo.close()
+
+    def test_db_expense_repo_repr_with_injected_session(self):
+        """repr() should not crash when a session is injected."""
+        engine = create_engine("sqlite:///:memory:")
+        SQLModel.metadata.create_all(engine)
+        with Session(engine) as session:
+            repo = DBExpenseRepo(db_url="sqlite:///:memory:", session=session)
+            assert isinstance(repr(repo), str)
+
+    def test_db_expense_repo_close_is_idempotent(self, owned_repo):
+        """close() should be safe to call multiple times."""
+        owned_repo = DBExpenseRepo(db_url="sqlite:///:memory:")
+        owned_repo.close()
+        owned_repo.close()  # should not raise
+
 
 @pytest.fixture
 def cli_runner():

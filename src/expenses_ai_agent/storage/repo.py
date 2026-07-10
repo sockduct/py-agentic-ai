@@ -4,6 +4,7 @@ from types import TracebackType
 from warnings import warn
 
 from sqlalchemy import func
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from expenses_ai_agent.storage.exceptions import ExpenseNotFoundError
@@ -137,6 +138,7 @@ class DBExpenseRepo(ExpenseRepository):
                 self._engine
             )  # ensures the table exists in production
             self._owns_session = True
+            self._open = True
 
     def __del__(self) -> None:
         try:
@@ -151,6 +153,8 @@ class DBExpenseRepo(ExpenseRepository):
             DeprecationWarning,
             stacklevel=2,
         )
+        if not self._open:
+            raise RuntimeError("Database connection is closed!")
         if not self._owns_session:
             raise RuntimeError("Cannot manage external session!")
         return self
@@ -161,6 +165,8 @@ class DBExpenseRepo(ExpenseRepository):
         self.close()
 
     def __len__(self) -> int:
+        if not self._open:
+            raise RuntimeError("Database connection is closed!")
         statement = select(func.count()).select_from(Expense)
         if self._owns_session:
             with Session(self._engine) as session:
@@ -170,21 +176,43 @@ class DBExpenseRepo(ExpenseRepository):
     def __repr__(self) -> str:
         if self._owns_session and hasattr(self._engine, "url"):
             db_url = self._engine.url
+            state = "open" if self._open else "closed"
         elif hasattr(self._session, "bind") and hasattr(self._session.bind, "url"):
             db_url = self._session.bind.url
+            state = "injected"
         else:
             db_url = "unknown"
+            state = "unknown"
 
-        return f"{self.__class__.__name__}(db_url={db_url})"
+        return f"{self.__class__.__name__}(db_url={db_url}): {state}"
 
     def __str__(self) -> str:
-        return "\n".join(
-            f"{rownum}: {element}"
-            for rownum, element in enumerate(self.get_all(), start=1)
-        )
+        if self._owns_session and not self._open:
+            return "Database connection is closed."
+
+        try:
+            return "\n".join(
+                f"{rownum}: {element}"
+                for rownum, element in enumerate(self.get_all(), start=1)
+            )
+        except SQLAlchemyError:
+            if self._owns_session:
+                return "Unable to retrieve data from the database."
+            return "Unable to access external session."
+
+    def is_open(self) -> bool:
+        return self._open
+
+    def close(self) -> None:
+        if getattr(self, "_owns_session", False) and getattr(self, "_open", False):
+            self._engine.dispose()
+            self._open = False  # idempotent guard
 
     def add(self, expense: Expense) -> None:
         """Add an expense to the repository."""
+        if getattr(self, "_open", False):
+            raise RuntimeError("DBExpenseRepo is closed.")
+
         if self._owns_session:
             with Session(self._engine) as session:
                 session.add(expense)
@@ -195,21 +223,31 @@ class DBExpenseRepo(ExpenseRepository):
             self._session.commit()
             self._session.refresh(expense)
 
-    def close(self) -> None:
-        if getattr(self, "_owns_session", False):
-            self._engine.dispose()
-            self._owns_session = False  # idempotent guard
-
     def update(self, expense: Expense) -> None:
         """Update an expense in the repository."""
-        if expense.id is None or self.get(expense.id) is None:
-            raise ExpenseNotFoundError(
-                f"Expense with ID {expense.id} not found for update."
-            )
-        self.add(expense)
+        if getattr(self, "_open", False):
+            raise RuntimeError("DBExpenseRepo is closed.")
+
+        if not self._owns_session:
+            if expense.id is None or self._session.get(Expense, expense.id) is None:
+                raise ExpenseNotFoundError(
+                    f"Expense with ID {expense.id} not found for update."
+                )
+            self._session.merge(expense)
+            self._session.commit()
+        with Session(self._engine) as session:
+            if expense.id is None or session.get(Expense, expense.id) is None:
+                raise ExpenseNotFoundError(
+                    f"Expense with ID {expense.id} not found for update."
+                )
+            session.merge(expense)
+            session.commit()
 
     def get(self, expense_id: int) -> Expense | None:
         """Retrieve an expense by its ID."""
+        if getattr(self, "_open", False):
+            raise RuntimeError("DBExpenseRepo is closed.")
+
         if not self._owns_session:
             return self._session.get(Expense, expense_id)
         with Session(self._engine) as session:
@@ -217,6 +255,9 @@ class DBExpenseRepo(ExpenseRepository):
 
     def get_all(self) -> list[Expense]:
         """Retrieve all expenses."""
+        if getattr(self, "_open", False):
+            raise RuntimeError("DBExpenseRepo is closed.")
+
         statement = select(Expense)
         if not self._owns_session:
             return list(self._session.exec(statement))
@@ -225,19 +266,28 @@ class DBExpenseRepo(ExpenseRepository):
 
     def delete(self, expense_id: int) -> None:
         """Remove an expense by its ID."""
-        if (expense := self.get(expense_id)) is None:
-            raise ExpenseNotFoundError(f"Expense with ID {expense_id} not found.")
+        if getattr(self, "_open", False):
+            raise RuntimeError("DBExpenseRepo is closed.")
 
-        if self._owns_session:
-            with Session(self._engine) as session:
-                session.delete(expense)
-                session.commit()
-        else:
+        if not self._owns_session:
+            expense = self._session.get(Expense, expense_id)
+            if expense is None:
+                raise ExpenseNotFoundError(f"Expense with ID {expense_id} not found.")
             self._session.delete(expense)
             self._session.commit()
 
+        with Session(self._engine) as session:
+            expense = session.get(Expense, expense_id)
+            if expense is None:
+                raise ExpenseNotFoundError(f"Expense with ID {expense_id} not found.")
+            session.delete(expense)
+            session.commit()
+
     def search_by_category(self, category: ExpenseCategory) -> list[Expense]:
         """Search for expenses by defined categories."""
+        if getattr(self, "_open", False):
+            raise RuntimeError("DBExpenseRepo is closed.")
+
         statement = select(Expense).where(Expense.category == category)
         if not self._owns_session:
             return list(self._session.exec(statement))
@@ -246,6 +296,9 @@ class DBExpenseRepo(ExpenseRepository):
 
     def search_by_dates(self, start: datetime, end: datetime) -> list[Expense]:
         """Search for expenses by defined dates."""
+        if getattr(self, "_open", False):
+            raise RuntimeError("DBExpenseRepo is closed.")
+
         statement = select(Expense).where(Expense.date >= start, Expense.date < end)
         if not self._owns_session:
             return list(self._session.exec(statement))
@@ -254,6 +307,9 @@ class DBExpenseRepo(ExpenseRepository):
 
     def list_by_user(self, telegram_user_id: int) -> list[Expense]:
         """Search for expenses by defined user."""
+        if getattr(self, "_open", False):
+            raise RuntimeError("DBExpenseRepo is closed.")
+
         statement = select(Expense).where(Expense.telegram_user_id == telegram_user_id)
         if not self._owns_session:
             return list(self._session.exec(statement))
