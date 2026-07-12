@@ -25,10 +25,14 @@ class ClassificationService:
         return self
 
     def __exit__(
-        self, exc_type: type[Exception], exc_value: Exception, tb: TracebackType
-    ):
-        if hasattr(self.expense_repo, "close"):
-            self.expense_repo.close()
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        close = getattr(self.expense_repo, "close", None)
+        if callable(close):
+            close()
 
     def classify(
         self,

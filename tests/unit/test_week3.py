@@ -1,8 +1,11 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from unittest.mock import create_autospec, patch
+from threading import Barrier
+from unittest.mock import MagicMock, create_autospec, patch
 
 import pytest
+from sqlalchemy.engine import Engine
 from sqlmodel import Session, SQLModel, create_engine
 from typer.testing import CliRunner
 
@@ -19,6 +22,7 @@ from expenses_ai_agent.services.exceptions import MissingRepositoryError
 from expenses_ai_agent.storage.exceptions import ExpenseNotFoundError
 from expenses_ai_agent.storage.models import Currency, Expense, ExpenseCategory
 from expenses_ai_agent.storage.repo import DBExpenseRepo, ExpenseRepository
+from expenses_ai_agent.telegram import bot as telegram_bot
 
 
 class TestClassificationPrompt:
@@ -236,6 +240,16 @@ def db_session(db_engine):
 
 class TestDBExpenseRepo:
     """Tests for DBExpenseRepo."""
+
+    @pytest.fixture(autouse=True)
+    def reset_owned_singleton(self):
+        if DBExpenseRepo._owned_instance is not None:
+            DBExpenseRepo._owned_instance.close()
+        try:
+            yield
+        finally:
+            if DBExpenseRepo._owned_instance is not None:
+                DBExpenseRepo._owned_instance.close()
 
     def test_db_expense_repo_add_and_get(self, db_session):
         repo = DBExpenseRepo(db_url="sqlite:///:memory:", session=db_session)
@@ -478,6 +492,132 @@ class TestDBExpenseRepo:
         owned_repo.close()
         owned_repo.close()  # should not raise
 
+    def test_same_url_reuses_owned_singleton(self):
+        first = DBExpenseRepo(db_url="sqlite:///:memory:")
+        second = DBExpenseRepo(db_url="sqlite:///:memory:")
+
+        assert first is second
+
+        first.close()
+        assert not first.is_open()
+        assert not second.is_open()
+
+    def test_equivalent_parsed_urls_reuse_process_engine(self):
+        first = DBExpenseRepo(
+            db_url="sqlite:///:memory:?timeout=10&check_same_thread=false"
+        )
+        second = DBExpenseRepo(
+            db_url="sqlite:///:memory:?check_same_thread=false&timeout=10"
+        )
+
+        assert first is second
+
+    def test_different_url_raises_while_engine_is_active(self):
+        first_url = "sqlite://"
+        second_url = "sqlite:///:memory:"
+        DBExpenseRepo(db_url=first_url)
+
+        with pytest.raises(RuntimeError, match="already has an active instance"):
+            DBExpenseRepo(db_url=second_url)
+
+    def test_close_disposes_singleton_and_allows_new_url(self):
+        first_url = "sqlite://"
+        second_url = "sqlite:///:memory:"
+        old_repo = DBExpenseRepo(db_url=first_url)
+        alias = DBExpenseRepo(db_url=first_url)
+
+        with patch.object(
+            old_repo._engine, "dispose", wraps=old_repo._engine.dispose
+        ) as mocked_dispose:
+            alias.close()
+            old_repo.close()
+
+        assert mocked_dispose.call_count == 1
+
+        assert not old_repo.is_open()
+        assert not alias.is_open()
+        with pytest.raises(RuntimeError, match="closed"):
+            old_repo.get_all()
+
+        new_repo = DBExpenseRepo(db_url=second_url)
+        assert new_repo is not old_repo
+        assert new_repo.is_open()
+
+    def test_injected_session_is_exempt_from_process_engine(self):
+        owned_url = "sqlite://"
+        external_engine = create_engine("sqlite:///:memory:")
+        SQLModel.metadata.create_all(external_engine)
+
+        try:
+            owned_repo = DBExpenseRepo(db_url=owned_url)
+            with Session(external_engine) as session:
+                first_injected = DBExpenseRepo(
+                    db_url="sqlite:///ignored.db", session=session
+                )
+                second_injected = DBExpenseRepo(
+                    db_url="sqlite:///also-ignored.db", session=session
+                )
+
+                assert first_injected is not second_injected
+                assert first_injected is not owned_repo
+
+                owned_repo.close()
+
+                assert first_injected.is_open()
+                assert second_injected.is_open()
+                first_injected.add(Expense(amount=Decimal("1.00")))
+                assert len(second_injected) == 1
+
+                first_injected.close()
+                assert not first_injected.is_open()
+                assert second_injected.is_open()
+                assert session.is_active
+        finally:
+            external_engine.dispose()
+
+    def test_concurrent_construction_creates_one_engine(self):
+        db_url = "sqlite:///:memory:"
+        worker_count = 4
+        barrier = Barrier(worker_count)
+
+        def build_repo() -> DBExpenseRepo:
+            barrier.wait()
+            return DBExpenseRepo(db_url=db_url)
+
+        with (
+            patch(
+                "expenses_ai_agent.storage.repo.create_engine", wraps=create_engine
+            ) as mocked_create_engine,
+            patch("expenses_ai_agent.storage.repo.SQLModel.metadata.create_all"),
+            ThreadPoolExecutor(max_workers=worker_count) as executor,
+        ):
+            repos = list(executor.map(lambda _: build_repo(), range(worker_count)))
+
+        assert mocked_create_engine.call_count == 1
+        assert len({id(repo) for repo in repos}) == 1
+
+    def test_failed_initialization_does_not_retain_singleton(self):
+        failed_engine = create_autospec(Engine, instance=True)
+
+        with (
+            patch(
+                "expenses_ai_agent.storage.repo.create_engine",
+                return_value=failed_engine,
+            ),
+            patch(
+                "expenses_ai_agent.storage.repo.SQLModel.metadata.create_all",
+                side_effect=RuntimeError("schema failure"),
+            ),
+            pytest.raises(RuntimeError, match="schema failure"),
+        ):
+            DBExpenseRepo(db_url="sqlite://")
+
+        failed_engine.dispose.assert_called_once_with()
+        assert DBExpenseRepo._owned_instance is None
+
+        repo = DBExpenseRepo(db_url="sqlite:///:memory:")
+        assert repo.is_open()
+
 
 @pytest.fixture
 def cli_runner():
@@ -566,3 +706,73 @@ class TestCLIApp:
 
         assert result.exit_code == 0
         assert "Coffee purchase" in result.output
+
+    def test_cli_closes_owned_repo(self, cli_runner, mock_classification_response):
+        assistant = create_autospec(Assistant)
+        assistant.completion.return_value = mock_classification_response
+        repo = DBExpenseRepo("sqlite:///:memory:")
+        service = ClassificationService(assistant=assistant, expense_repo=repo)
+
+        with patch("expenses_ai_agent.cli.cli._build_service", return_value=service):
+            result = cli_runner.invoke(app, ["Test expense", "--db"])
+
+        assert result.exit_code == 0
+        assert not repo.is_open()
+        assert DBExpenseRepo._owned_instance is None
+
+
+class TestTelegramBotLifecycle:
+    def test_main_closes_owned_repo_after_polling(self):
+        repo = DBExpenseRepo("sqlite:///:memory:")
+        service = ClassificationService(
+            assistant=create_autospec(Assistant), expense_repo=repo
+        )
+        application = MagicMock()
+        application.bot_data = {"service": service}
+
+        with (
+            patch.object(telegram_bot, "config", return_value="configured"),
+            patch.object(telegram_bot, "build_application", return_value=application),
+        ):
+            telegram_bot.main()
+
+        assert not repo.is_open()
+        assert DBExpenseRepo._owned_instance is None
+
+    def test_main_closes_owned_repo_when_polling_fails(self):
+        repo = DBExpenseRepo("sqlite:///:memory:")
+        service = ClassificationService(
+            assistant=create_autospec(Assistant), expense_repo=repo
+        )
+        application = MagicMock()
+        application.bot_data = {"service": service}
+        application.run_polling.side_effect = RuntimeError("polling failed")
+
+        with (
+            patch.object(telegram_bot, "config", return_value="configured"),
+            patch.object(telegram_bot, "build_application", return_value=application),
+            pytest.raises(RuntimeError, match="polling failed"),
+        ):
+            telegram_bot.main()
+
+        assert not repo.is_open()
+        assert DBExpenseRepo._owned_instance is None
+
+    def test_build_application_closes_repo_when_setup_fails(self):
+        repo = create_autospec(DBExpenseRepo, instance=True)
+        application = MagicMock()
+        application.bot_data = {}
+        application.add_handler.side_effect = RuntimeError("handler setup failed")
+        builder = MagicMock()
+        builder.token.return_value = builder
+        builder.build.return_value = application
+
+        with (
+            patch.object(telegram_bot.Application, "builder", return_value=builder),
+            patch.object(telegram_bot, "OpenAIAssistant"),
+            patch.object(telegram_bot, "DBExpenseRepo", return_value=repo),
+            pytest.raises(RuntimeError, match="handler setup failed"),
+        ):
+            telegram_bot.build_application("token", "sqlite://", "api-key")
+
+        repo.close.assert_called_once_with()

@@ -29,19 +29,23 @@ def build_application(token: str, db_url: str, api_key: str) -> Application:
 
     assistant = OpenAIAssistant(api_key=api_key)
     repo = DBExpenseRepo(db_url)
-    application.bot_data["service"] = ClassificationService(assistant, repo)
+    try:
+        application.bot_data["service"] = ClassificationService(assistant, repo)
 
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(
-        CallbackQueryHandler(
-            handle_category_selection, pattern=f"^{CATEGORY_CALLBACK_PREFIX}"
+        application.add_handler(CommandHandler("start", start_command))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(
+            CallbackQueryHandler(
+                handle_category_selection, pattern=f"^{CATEGORY_CALLBACK_PREFIX}"
+            )
         )
-    )
-    application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_expense_text)
-    )
-    return application
+        application.add_handler(
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_expense_text)
+        )
+        return application
+    except Exception:
+        repo.close()
+        raise
 
 
 def main() -> None:
@@ -54,8 +58,15 @@ def main() -> None:
     api_key = config("OPENAI_API_KEY")
 
     application = build_application(token=token, db_url=db_url, api_key=api_key)
-    logger.info("Starting bot polling...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    service: ClassificationService = application.bot_data["service"]
+    try:
+        logger.info("Starting bot polling...")
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES, drop_pending_updates=True
+        )
+    finally:
+        if isinstance(service.expense_repo, DBExpenseRepo):
+            service.expense_repo.close()
 
 
 if __name__ == "__main__":
