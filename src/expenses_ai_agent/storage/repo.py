@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timezone
 from threading import Lock
 from types import TracebackType
 from typing import ClassVar, final
@@ -11,7 +11,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from expenses_ai_agent.storage.exceptions import ExpenseNotFoundError
-from expenses_ai_agent.storage.models import Expense, ExpenseCategory
+from expenses_ai_agent.storage.models import (
+    Currency,
+    Expense,
+    ExpenseCategory,
+    UserPreference,
+)
 
 
 class ExpenseRepository(ABC):
@@ -390,3 +395,34 @@ class DBExpenseRepo(ExpenseRepository):
             return list(self._session.exec(statement))
         with Session(self._engine) as session:
             return list(session.exec(statement))
+
+
+class DBUserPreferenceRepo:
+    def __init__(self, db_url: str, session: Session | None = None):
+        if session is None:
+            engine = create_engine(db_url)
+            SQLModel.metadata.create_all(engine)
+            self.db = Session(engine)
+        else:
+            self.db = session
+
+    def get_by_user_id(self, telegram_user_id: int) -> UserPreference | None:
+        return self.db.exec(
+            select(UserPreference).where(
+                UserPreference.telegram_user_id == telegram_user_id
+            )
+        ).first()
+
+    def upsert(self, telegram_user_id: int, currency: Currency) -> UserPreference:
+        pref = self.get_by_user_id(telegram_user_id)
+        if pref is None:
+            pref = UserPreference(
+                telegram_user_id=telegram_user_id, preferred_currency=currency
+            )
+            self.db.add(pref)
+        else:
+            pref.preferred_currency = currency
+            pref.updated_at = datetime.now(timezone.utc)
+        self.db.commit()
+        self.db.refresh(pref)
+        return pref

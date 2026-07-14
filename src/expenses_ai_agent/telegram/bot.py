@@ -2,16 +2,18 @@ import logging
 
 from decouple import config
 from telegram import Update
-from telegram.ext import Application, CommandHandler
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 
 from expenses_ai_agent.llms.openai import OpenAIAssistant
 from expenses_ai_agent.services.classification import ClassificationService
 from expenses_ai_agent.storage.repo import DBExpenseRepo
 from expenses_ai_agent.telegram.handlers import (
+    CurrencyHandler,
     ExpenseConversationHandler,
     help_command,
     start_command,
 )
+from expenses_ai_agent.telegram.keyboards import CURRENCY_CALLBACK_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,17 @@ def build_application(token: str, db_url: str, api_key: str) -> Application:
         application.bot_data["service"] = service
         application.add_handler(CommandHandler("start", start_command))
         application.add_handler(CommandHandler("help", help_command))
+
+        currency_handler = CurrencyHandler(db_url=db_url)
+        application.add_handler(
+            CommandHandler("currency", currency_handler.currency_command)
+        )
+        application.add_handler(
+            CallbackQueryHandler(
+                currency_handler.handle_currency_selection,
+                pattern=f"^{CURRENCY_CALLBACK_PREFIX}",
+            )
+        )
         application.add_handler(
             ExpenseConversationHandler(
                 db_url=db_url, api_key=api_key, service=service

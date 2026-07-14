@@ -7,6 +7,7 @@ from telegram.ext import ConversationHandler
 from expenses_ai_agent.llms.base import Assistant
 from expenses_ai_agent.llms.output import ExpenseCategorizationResponse
 from expenses_ai_agent.storage.models import Currency
+from expenses_ai_agent.storage.repo import DBUserPreferenceRepo
 from expenses_ai_agent.telegram.exceptions import (
     ClassificationError,
     InvalidInputError,
@@ -14,6 +15,7 @@ from expenses_ai_agent.telegram.exceptions import (
 )
 from expenses_ai_agent.telegram.handlers import (
     ConversationState,
+    CurrencyHandler,
     ExpenseConversationHandler,
     cancel_command,
     help_command,
@@ -190,3 +192,49 @@ class TestExpenseConversationHandler:
             mock_callback_update, mock_context
         )
         assert result == ConversationHandler.END
+
+
+class TestCurrencyHandler:
+    async def test_currency_command_shows_keyboard(self, mock_update, mock_context):
+        await CurrencyHandler(db_url="sqlite:///:memory:").currency_command(
+            mock_update, mock_context
+        )
+        assert "reply_markup" in mock_update.message.reply_text.call_args.kwargs
+
+    async def test_handle_currency_selection(self, mock_callback_update, mock_context):
+        mock_callback_update.callback_query.data = "setcurrency:EUR"
+        handler = CurrencyHandler(db_url="sqlite:///:memory:")
+        with patch("expenses_ai_agent.telegram.handlers.DBUserPreferenceRepo"):
+            await handler.handle_currency_selection(mock_callback_update, mock_context)
+        mock_callback_update.callback_query.answer.assert_awaited()
+
+    async def test_currency_command_without_message_is_noop(self, mock_context):
+        update = MagicMock()
+        update.message = None
+        await CurrencyHandler(db_url="sqlite:///:memory:").currency_command(
+            update, mock_context
+        )
+
+    async def test_currency_selection_without_query_is_noop(self, mock_context):
+        update = MagicMock()
+        update.callback_query = None
+        with patch("expenses_ai_agent.telegram.handlers.DBUserPreferenceRepo") as repo:
+            await CurrencyHandler(
+                db_url="sqlite:///:memory:"
+            ).handle_currency_selection(update, mock_context)
+        repo.assert_not_called()
+
+
+class TestDBUserPreferenceRepoIntegration:
+    def test_upsert_inserts_then_updates(self):
+        repo = DBUserPreferenceRepo(db_url="sqlite:///:memory:")
+        repo.upsert(telegram_user_id=42, currency=Currency.USD)
+        assert repo.get_by_user_id(42).preferred_currency == Currency.USD
+        repo.upsert(telegram_user_id=42, currency=Currency.EUR)
+        assert repo.get_by_user_id(42).preferred_currency == Currency.EUR
+
+    def test_get_unknown_user_returns_none(self):
+        assert (
+            DBUserPreferenceRepo(db_url="sqlite:///:memory:").get_by_user_id(99999)
+            is None
+        )
