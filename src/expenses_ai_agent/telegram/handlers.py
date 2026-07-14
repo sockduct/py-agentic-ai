@@ -1,3 +1,4 @@
+import warnings
 from enum import IntEnum
 
 from telegram import Update
@@ -9,6 +10,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from telegram.warnings import PTBUserWarning
 
 from expenses_ai_agent.llms.openai import OpenAIAssistant
 from expenses_ai_agent.services.classification import ClassificationService
@@ -38,16 +40,25 @@ class ConversationState(IntEnum):
 
 
 class ExpenseConversationHandler:
-    def __init__(self, db_url: str, api_key: str, model: str = "gpt-4o-mini"):
+    def __init__(
+        self,
+        db_url: str,
+        api_key: str,
+        model: str = "gpt-4o-mini",
+        service: ClassificationService | None = None,
+    ):
         self._db_url = db_url
         self._api_key = api_key
         self._model = model
+        self._service = service
         self._preprocessor = InputPreprocessor()
 
     def _build_assistant(self) -> OpenAIAssistant:
         return OpenAIAssistant(api_key=self._api_key, model=self._model)
 
     def _build_service(self) -> ClassificationService:
+        if self._service is not None:
+            return self._service
         return ClassificationService(
             self._build_assistant(), DBExpenseRepo(self._db_url)
         )
@@ -56,22 +67,23 @@ class ExpenseConversationHandler:
         return [c.value for c in ExpenseCategory]
 
     def build(self) -> ConversationHandler:
-        return ConversationHandler(
-            entry_points=[
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND, self.handle_expense_text
-                )
-            ],
-            states={
-                ConversationState.WAITING_FOR_CATEGORY: [
-                    CallbackQueryHandler(
-                        self.handle_category_selection,
-                        pattern=f"^{CATEGORY_CALLBACK_PREFIX}",
+        with warnings.catch_warnings(action="ignore", category=PTBUserWarning):
+            return ConversationHandler(
+                entry_points=[
+                    MessageHandler(
+                        filters.TEXT & ~filters.COMMAND, self.handle_expense_text
                     )
                 ],
-            },
-            fallbacks=[CommandHandler("cancel", cancel_command)],
-        )
+                states={
+                    ConversationState.WAITING_FOR_CATEGORY: [
+                        CallbackQueryHandler(
+                            self.handle_category_selection,
+                            pattern=f"^{CATEGORY_CALLBACK_PREFIX}",
+                        )
+                    ],
+                },
+                fallbacks=[CommandHandler("cancel", cancel_command)],
+            )
 
     async def handle_expense_text(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
