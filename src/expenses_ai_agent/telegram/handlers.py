@@ -126,7 +126,7 @@ class ExpenseConversationHandler:
         if not query or not query.data or not update.effective_user:
             return ConversationHandler.END
         await query.answer()
-        category = query.data.split(":", 1)[1]
+        category = ExpenseCategory(query.data.split(":", 1)[1])
 
         user_data = context.user_data or {}
         description = user_data.get("expense_description")
