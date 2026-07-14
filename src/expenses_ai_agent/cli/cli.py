@@ -1,9 +1,7 @@
 import typer
 from decouple import config
-
-### Need when add try/except back - see below:
-### from openai import OpenAIError
-### from pydantic import ValidationError
+from openai import OpenAIError
+from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table
 
@@ -31,23 +29,25 @@ def classify(
     description: str = typer.Argument(..., help="Expense description to classify"),
     db: bool = typer.Option(False, "--db", help="Persist to database"),
     verbose: bool = typer.Option(False, "--verbose", help="Verbose output"),
+    debug: bool = typer.Option(False, "--debug", help="Show full tracebacks"),
 ):
     """Classify an expense using AI."""
-    ### The try/except needs to go in for "production" - however; I keep getting
-    ### sporadic errors from OpenAI API calls and this hides the details I need
-    ### to fix it.  Once all issues are robustly addressed, I will add it back.
-    ### try:
-    service = _build_service(db=db)
-    with service:
-        result = service.classify(description, persist=db)
+    try:
+        service = _build_service(db=db)
+        with service:
+            result = service.classify(description, persist=db)
 
-    # Display results
-    _display_result(result, verbose=verbose)
-    """
+        # Display results
+        _display_result(result, verbose=verbose)
     except (OpenAIError, ValidationError) as err:
-        console.print(f"[red]Error: {err}[/red]")
+        # Pin True for now:
+        debug = True
+        if debug:
+            console.print_exception()
+        else:
+            console.print(f"[red]Error:[/red] {err}")
+            console.print("[dim]Run with --debug for full traceback[/dim]")
         raise typer.Exit(code=1) from err
-    """
 
 
 def _build_service(
