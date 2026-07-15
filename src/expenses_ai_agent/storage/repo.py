@@ -399,12 +399,30 @@ class DBExpenseRepo(ExpenseRepository):
 
 class DBUserPreferenceRepo:
     def __init__(self, db_url: str, session: Session | None = None):
+        self._owns_engine = session is None
         if session is None:
-            engine = create_engine(db_url)
-            SQLModel.metadata.create_all(engine)
-            self.db = Session(engine)
+            self._engine = create_engine(db_url)
+            SQLModel.metadata.create_all(self._engine)
+            self.db = Session(self._engine)
         else:
+            self._engine = None
             self.db = session
+
+    def __enter__(self) -> "DBUserPreferenceRepo":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    def close(self) -> None:
+        self.db.close()
+        if self._owns_engine and self._engine is not None:
+            self._engine.dispose()
 
     def get_by_user_id(self, telegram_user_id: int) -> UserPreference | None:
         return self.db.exec(

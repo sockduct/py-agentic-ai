@@ -102,7 +102,14 @@ class ExpenseConversationHandler:
         if processed.warnings:
             await update.message.reply_text("Note: " + "; ".join(processed.warnings))
 
-        result = self._build_service().classify(processed.text)
+        try:
+            result = self._build_service().classify(processed.text)
+        except Exception:  # or narrow to (OpenAIError, ValidationError, ResponseError)
+            await update.message.reply_text(
+                "Sorry, I couldn't classify that. Please try again in a moment."
+            )
+            return ConversationHandler.END
+
         if context.user_data is not None:
             context.user_data["expense_description"] = processed.text
             context.user_data["classification_response"] = result.response
@@ -167,10 +174,12 @@ class CurrencyHandler:
             return
         await query.answer()
         currency_code = query.data.split(":", 1)[1]
-        DBUserPreferenceRepo(self._db_url).upsert(
-            telegram_user_id=update.effective_user.id,
-            currency=Currency(currency_code),
-        )
+        with DBUserPreferenceRepo(self._db_url) as pref_repo:
+            pref_repo.upsert(
+                telegram_user_id=update.effective_user.id,
+                currency=Currency(currency_code),
+            )
+
         await query.edit_message_text(f"Currency preference saved as {currency_code}.")
 
 

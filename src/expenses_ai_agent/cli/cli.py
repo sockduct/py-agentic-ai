@@ -37,11 +37,8 @@ def classify(
         with service:
             result = service.classify(description, persist=db)
 
-        # Display results
         _display_result(result, verbose=verbose)
     except (OpenAIError, ValidationError) as err:
-        # Pin True for now:
-        debug = True
         if debug:
             console.print_exception()
         else:
@@ -69,8 +66,9 @@ def _display_result(result: ClassificationResult, *, verbose: bool = False) -> N
     table.add_row("Currency", response.currency)
     table.add_row("Confidence", f"{response.confidence:.0%}")
     if verbose:
+        table.add_row("Cost", f"{response.cost}")
         if response.comments:
-            table.add_row("Cost", f"{response.comments}")
+            table.add_row("Comments", f"{response.comments}")
         # Commented out for now as removed this from LLM parsed response:
         # table.add_row("Timestamp", f"{response.timestamp:%Y-%m-%d %H:%M:%S}")
     table.add_row("Persisted", "Yes" if result.persisted else "No")
