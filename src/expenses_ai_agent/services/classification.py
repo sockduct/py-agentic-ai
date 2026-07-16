@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from types import TracebackType
 
 from expenses_ai_agent.llms.base import MESSAGES, Assistant
 from expenses_ai_agent.llms.output import ExpenseCategorizationResponse
@@ -19,6 +20,19 @@ class ClassificationResult:
 class ClassificationService:
     assistant: Assistant
     expense_repo: ExpenseRepository | None = None
+
+    def __enter__(self) -> "ClassificationService":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        close = getattr(self.expense_repo, "close", None)
+        if callable(close):
+            close()
 
     def classify(
         self,
@@ -42,6 +56,7 @@ class ClassificationService:
         expense_description: str,
         category_name: ExpenseCategory,
         response: ExpenseCategorizationResponse,
+        telegram_user_id: int | None = None,
     ) -> None:
         updated_response = ExpenseCategorizationResponse(
             category=category_name,
@@ -50,7 +65,7 @@ class ClassificationService:
             confidence=response.confidence,
             cost=response.cost,
         )
-        self._persist_expense(expense_description, updated_response)
+        self._persist_expense(expense_description, updated_response, telegram_user_id)
 
     def _build_messages(self, expense_description: str) -> MESSAGES:
         return [
@@ -62,13 +77,17 @@ class ClassificationService:
         ]
 
     def _persist_expense(
-        self, expense_description: str, response: ExpenseCategorizationResponse
+        self,
+        expense_description: str,
+        response: ExpenseCategorizationResponse,
+        telegram_user_id: int | None = None,
     ) -> None:
         expense = Expense(
             amount=response.total_amount,
             currency=response.currency,
             category=response.category,
             description=expense_description,
+            telegram_user_id=telegram_user_id,
         )
         if self.expense_repo is None:
             raise MissingRepositoryError(

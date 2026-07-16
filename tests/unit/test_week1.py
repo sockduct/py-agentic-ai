@@ -1,11 +1,16 @@
 from abc import ABC
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
 
 from expenses_ai_agent.storage.exceptions import ExpenseNotFoundError
-from expenses_ai_agent.storage.models import Currency, Expense, ExpenseCategory
+from expenses_ai_agent.storage.models import (
+    Currency,
+    Expense,
+    ExpenseCategory,
+    _currency_symbol,
+)
 from expenses_ai_agent.storage.repo import ExpenseRepository, InMemoryExpenseRepository
 
 
@@ -146,6 +151,28 @@ class TestExpense:
         result = str(expense)
         assert "25" in result
         assert "GBP" in result
+
+    def test_expense_repr_representation(self):
+        """Expense __repr__ should include key fields for debugging."""
+        expense = Expense(
+            id=7,
+            amount=Decimal("25.00"),
+            currency=Currency.GBP,
+            description="Book purchase",
+            category=ExpenseCategory.SHOPPING,
+            telegram_user_id=123,
+        )
+
+        result = repr(expense)
+
+        assert "Expense(id=7" in result
+        assert "amount=25.00" in result
+        assert "currency=GBP" in result
+        assert "telegram_user_id=123" in result
+
+    def test_currency_symbol_falls_back_to_default_currency(self):
+        """Unknown currency-like values should fall back to the default."""
+        assert _currency_symbol("UNKNOWN") == Currency.EUR
 
     def test_expense_create_class_method(self):
         """Expense.create() should be a convenient factory method."""
@@ -308,3 +335,35 @@ class TestInMemoryExpenseRepository:
 
         assert len(food_expenses) == 2
         assert all(e.category == ExpenseCategory.FOOD for e in food_expenses)
+
+    def test_search_by_dates(self, repo):
+        """Should be able to search expenses by date range."""
+        now = datetime.now(timezone.utc)
+        yesterday = now - timedelta(days=1)
+        last_week = now - timedelta(days=7)
+
+        repo.add(Expense(amount=Decimal("10.00"), date=now))
+        repo.add(Expense(amount=Decimal("20.00"), date=yesterday))
+        repo.add(Expense(amount=Decimal("30.00"), date=last_week))
+
+        results = repo.search_by_dates(
+            start=now - timedelta(days=2),
+            end=now + timedelta(seconds=1),
+        )
+
+        assert len(results) == 2
+        assert {expense.amount for expense in results} == {
+            Decimal("10.00"),
+            Decimal("20.00"),
+        }
+
+    def test_list_by_user(self, repo):
+        """Should be able to list expenses by Telegram user ID."""
+        repo.add(Expense(amount=Decimal("10.00"), telegram_user_id=100))
+        repo.add(Expense(amount=Decimal("20.00"), telegram_user_id=100))
+        repo.add(Expense(amount=Decimal("30.00"), telegram_user_id=200))
+
+        results = repo.list_by_user(telegram_user_id=100)
+
+        assert len(results) == 2
+        assert all(expense.telegram_user_id == 100 for expense in results)

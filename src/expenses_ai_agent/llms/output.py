@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+# Commented out for now:
+# from datetime import datetime, timezone
 from decimal import Decimal
 
 from pydantic import BaseModel, Field
@@ -30,5 +31,9 @@ class ExpenseCategorizationResponse(BaseModel):
         description="Leave as 0 — set programmatically after the API call",
     )
     comments: str | None = None
+    # Commented out - keep getting errors from Pydantic because OpenAI
+    # occasionally doesn't return a timestamp, and not currently used.
+    # Also - this appears to be set by OpenAI to the model's knowledge cutoff
+    # date which is not useful.
     # lambda needed to pass tz arg - datetime.utcnow is deprecated:
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

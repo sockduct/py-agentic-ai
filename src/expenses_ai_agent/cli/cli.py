@@ -1,9 +1,7 @@
 import typer
 from decouple import config
-
-### Need when add try/except back - see below:
-### from openai import OpenAIError
-### from pydantic import ValidationError
+from openai import OpenAIError
+from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table
 
@@ -12,7 +10,7 @@ from expenses_ai_agent.services.classification import (
     ClassificationResult,
     ClassificationService,
 )
-from expenses_ai_agent.storage.repo import DBExpenseRepo, ExpenseRepository
+from expenses_ai_agent.storage.repo import DBExpenseRepo
 
 MODEL = "gpt-4o-mini"
 # Persistent storage requires configuring a value in .env:
@@ -30,34 +28,30 @@ console = Console()
 def classify(
     description: str = typer.Argument(..., help="Expense description to classify"),
     db: bool = typer.Option(False, "--db", help="Persist to database"),
-    verbose: bool = typer.Option(False, "-v", help="Verbose output"),
+    verbose: bool = typer.Option(False, "--verbose", help="Verbose output"),
+    debug: bool = typer.Option(False, "--debug", help="Show full tracebacks"),
 ):
     """Classify an expense using AI."""
-    ### The try/except needs to go in for "production" - however; I keep getting
-    ### sporadic errors from OpenAI API calls and this hides the details I need
-    ### to fix it.  Once all issues are robustly addressed, I will add it back.
-    ### try:
-    if db and DB_URL:
-        with DBExpenseRepo(db_url=DB_URL) as expense_repo:
-            service = _build_service(expense_repo=expense_repo)
-            result = service.classify(description, persist=True)
-    else:
-        service = _build_service()
-        result = service.classify(description, persist=False)
+    try:
+        service = _build_service(db=db)
+        with service:
+            result = service.classify(description, persist=db)
 
-    # Display results
-    _display_result(result, verbose=verbose)
-    """
+        _display_result(result, verbose=verbose)
     except (OpenAIError, ValidationError) as err:
-        console.print(f"[red]Error: {err}[/red]")
+        if debug:
+            console.print_exception()
+        else:
+            console.print(f"[red]Error:[/red] {err}")
+            console.print("[dim]Run with --debug for full traceback[/dim]")
         raise typer.Exit(code=1) from err
-    """
 
 
 def _build_service(
-    *, model: str = MODEL, expense_repo: ExpenseRepository | None = None
+    db: bool, *, model: str = MODEL, db_url: str = DB_URL
 ) -> ClassificationService:
     assistant = OpenAIAssistant(model=model)
+    expense_repo = DBExpenseRepo(db_url) if db else None
     return ClassificationService(assistant=assistant, expense_repo=expense_repo)
 
 
@@ -72,9 +66,11 @@ def _display_result(result: ClassificationResult, *, verbose: bool = False) -> N
     table.add_row("Currency", response.currency)
     table.add_row("Confidence", f"{response.confidence:.0%}")
     if verbose:
+        table.add_row("Cost", f"{response.cost}")
         if response.comments:
-            table.add_row("Cost", f"{response.comments}")
-        table.add_row("Timestamp", f"{response.timestamp:%Y-%m-%d %H:%M:%S}")
+            table.add_row("Comments", f"{response.comments}")
+        # Commented out for now as removed this from LLM parsed response:
+        # table.add_row("Timestamp", f"{response.timestamp:%Y-%m-%d %H:%M:%S}")
     table.add_row("Persisted", "Yes" if result.persisted else "No")
 
     console.print(table)

@@ -10,6 +10,7 @@ requires-python = ">=3.14"
 dependencies = [
     "openai>=2.43.0",
     "python-decouple>=3.8",
+    "python-telegram-bot>=22.8",
     "pyyaml>=6.0.3",
     "requests>=2.34.2",
     "rich>=15.0.0",
@@ -25,8 +26,12 @@ project-includes = [
     "**/*.ipynb",
 ]
 
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
 [project.scripts]
 expenses-ai-agent = "expenses_ai_agent.cli.cli:app"
+expenses-telegram-bot = "expenses_ai_agent.telegram.bot:main"
 
 [build-system]
 requires = ["uv_build>=0.11.19,<0.12.0"]
@@ -42,6 +47,7 @@ dev = [
     "ptpython>=3.0.32",
     "pyrefly>=1.0.0",
     "pytest>=9.0.3",
+    "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
     "ruff>=0.15.16",
     "ty>=0.0.45",

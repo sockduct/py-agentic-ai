@@ -1,8 +1,11 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from threading import Barrier
 from unittest.mock import create_autospec, patch
 
 import pytest
+from sqlalchemy.engine import Engine
 from sqlmodel import Session, SQLModel, create_engine
 from typer.testing import CliRunner
 
@@ -15,6 +18,7 @@ from expenses_ai_agent.services.classification import (
     ClassificationResult,
     ClassificationService,
 )
+from expenses_ai_agent.services.exceptions import MissingRepositoryError
 from expenses_ai_agent.storage.exceptions import ExpenseNotFoundError
 from expenses_ai_agent.storage.models import Currency, Expense, ExpenseCategory
 from expenses_ai_agent.storage.repo import DBExpenseRepo, ExpenseRepository
@@ -159,6 +163,12 @@ class TestClassificationService:
         assert added.amount == Decimal("5.50")
         assert added.category == ExpenseCategory.FOOD
 
+    def test_classify_with_persistence_requires_repository(self, mock_assistant):
+        service = ClassificationService(assistant=mock_assistant)
+
+        with pytest.raises(MissingRepositoryError, match="no repository provided"):
+            service.classify("Coffee $5.50", persist=True)
+
     def test_persist_with_category_override(self, mock_assistant, mock_expense_repo):
         service = ClassificationService(
             assistant=mock_assistant,
@@ -177,9 +187,27 @@ class TestClassificationService:
             expense_description="Movie snacks",
             category_name="Entertainment",
             response=response,
+            telegram_user_id=99,
         )
 
         mock_expense_repo.add.assert_called_once()
+
+    def test_persist_with_category_requires_repository(self, mock_assistant):
+        service = ClassificationService(assistant=mock_assistant)
+        response = ExpenseCategorizationResponse(
+            category="Food",
+            total_amount=Decimal("10.00"),
+            currency=Currency.EUR,
+            confidence=0.6,
+            cost=Decimal("0.001"),
+        )
+
+        with pytest.raises(MissingRepositoryError, match="no repository provided"):
+            service.persist_with_category(
+                expense_description="Movie snacks",
+                category_name=ExpenseCategory.ENTERTAINMENT,
+                response=response,
+            )
 
     def test_service_builds_correct_messages(self, mock_assistant):
         service = ClassificationService(assistant=mock_assistant)
@@ -197,7 +225,10 @@ class TestClassificationService:
 def db_engine():
     engine = create_engine("sqlite:///:memory:")
     SQLModel.metadata.create_all(engine)
-    return engine
+    try:
+        yield engine
+    finally:
+        engine.dispose()
 
 
 @pytest.fixture
@@ -208,6 +239,16 @@ def db_session(db_engine):
 
 class TestDBExpenseRepo:
     """Tests for DBExpenseRepo."""
+
+    @pytest.fixture(autouse=True)
+    def reset_owned_singleton(self):
+        if DBExpenseRepo._owned_instance is not None:
+            DBExpenseRepo._owned_instance.close()
+        try:
+            yield
+        finally:
+            if DBExpenseRepo._owned_instance is not None:
+                DBExpenseRepo._owned_instance.close()
 
     def test_db_expense_repo_add_and_get(self, db_session):
         repo = DBExpenseRepo(db_url="sqlite:///:memory:", session=db_session)
@@ -232,6 +273,14 @@ class TestDBExpenseRepo:
 
         expenses = repo.get_all()
         assert len(expenses) == 2
+
+    def test_db_expense_repo_len_with_injected_session(self, db_session):
+        repo = DBExpenseRepo(db_url="sqlite:///:memory:", session=db_session)
+
+        repo.add(Expense(amount=Decimal("10.00"), currency=Currency.EUR))
+        repo.add(Expense(amount=Decimal("20.00"), currency=Currency.USD))
+
+        assert len(repo) == 2
 
     def test_db_expense_repo_delete(self, db_session):
         repo = DBExpenseRepo(db_url="sqlite:///:memory:", session=db_session)
@@ -311,29 +360,262 @@ class TestDBExpenseRepo:
         user_100_expenses = repo.list_by_user(telegram_user_id=100)
         assert len(user_100_expenses) == 2
 
-    def test_db_expense_repo_owned_session_requires_context_manager(self):
+    @pytest.fixture
+    def owned_repo(self):
         repo = DBExpenseRepo(db_url="sqlite:///:memory:")
+        try:
+            yield repo
+        finally:
+            repo.close()
 
-        with pytest.raises(RuntimeError, match="must be used as a context manager"):
-            repo.get_all()
+    def test_db_expense_repo_owned_session_add_get_len_and_str(self, owned_repo):
+        expense = Expense(
+            amount=Decimal("42.50"),
+            currency=Currency.EUR,
+            description="Owned session",
+            category=ExpenseCategory.FOOD,
+        )
 
-        repo.close()
+        owned_repo.add(expense)
 
-    def test_db_expense_repo_creates_own_session_with_context_manager(self):
-        with DBExpenseRepo(db_url="sqlite:///:memory:") as repo:
-            expense = Expense(
-                amount=Decimal("12.34"),
-                currency=Currency.USD,
-                description="Own session",
+        assert expense.id is not None
+        assert len(owned_repo) == 1
+        assert "sqlite" in repr(owned_repo)
+        assert "Owned session" in str(owned_repo)
+
+        result = owned_repo.get(expense.id)
+        assert result is not None
+        assert result.amount == Decimal("42.50")
+
+        all_expenses = owned_repo.get_all()
+        assert len(all_expenses) == 1
+
+    def test_db_expense_repo_owned_session_update_and_delete(self, owned_repo):
+        expense = Expense(
+            amount=Decimal("15.00"),
+            currency=Currency.EUR,
+            description="Initial",
+            category=ExpenseCategory.FOOD,
+        )
+        owned_repo.add(expense)
+        expense_id = expense.id
+
+        expense.description = "Updated"
+        owned_repo.update(expense)
+
+        updated = owned_repo.get(expense_id)
+        assert updated is not None
+        assert updated.description == "Updated"
+
+        owned_repo.delete(expense_id)
+        assert owned_repo.get(expense_id) is None
+
+    def test_db_expense_repo_owned_session_update_missing_raises(self, owned_repo):
+        with pytest.raises(ExpenseNotFoundError):
+            owned_repo.update(Expense(id=999, amount=Decimal("10.00")))
+
+    def test_db_expense_repo_owned_session_searches(self, owned_repo):
+        now = datetime.now(timezone.utc)
+        yesterday = now - timedelta(days=1)
+        last_week = now - timedelta(days=7)
+
+        owned_repo.add(
+            Expense(
+                amount=Decimal("10"),
+                currency=Currency.EUR,
+                date=now,
+                category=ExpenseCategory.FOOD,
+                telegram_user_id=100,
             )
+        )
+        owned_repo.add(
+            Expense(
+                amount=Decimal("20"),
+                currency=Currency.EUR,
+                date=yesterday,
+                category=ExpenseCategory.FOOD,
+                telegram_user_id=100,
+            )
+        )
+        owned_repo.add(
+            Expense(
+                amount=Decimal("30"),
+                currency=Currency.EUR,
+                date=last_week,
+                category=ExpenseCategory.TRANSPORT,
+                telegram_user_id=200,
+            )
+        )
 
-            repo.add(expense)
-            assert expense.id is not None
+        food_expenses = owned_repo.search_by_category(ExpenseCategory.FOOD)
+        recent_expenses = owned_repo.search_by_dates(
+            start=now - timedelta(days=3),
+            end=now + timedelta(seconds=1),
+        )
+        user_expenses = owned_repo.list_by_user(telegram_user_id=100)
 
-            result = repo.get(expense.id)
-            assert result is not None
-            assert result.amount == Decimal("12.34")
-            assert repo._owns_session is True
+        assert len(food_expenses) == 2
+        assert len(recent_expenses) == 2
+        assert len(user_expenses) == 2
+
+    def test_db_expense_repo_update_with_owned_session(self, owned_repo):
+        """update() should work when the repo owns its session (detached object round-trip)."""
+        expense = Expense(amount=Decimal("10.00"), currency=Currency.EUR)
+        owned_repo.add(expense)
+        expense.amount = Decimal("20.00")
+        owned_repo.update(expense)
+        result = owned_repo.get(expense.id)
+        assert result is not None
+        assert result.amount == Decimal("20.00")
+        owned_repo.close()
+
+    def test_db_expense_repo_delete_with_owned_session(self, owned_repo):
+        """delete() should work when the repo owns its session (detached object)."""
+        expense = Expense(amount=Decimal("10.00"), currency=Currency.EUR)
+        owned_repo.add(expense)
+        owned_repo.delete(expense.id)
+        assert owned_repo.get(expense.id) is None
+        owned_repo.close()
+
+    def test_db_expense_repo_repr_with_injected_session(self):
+        """repr() should not crash when a session is injected."""
+        engine = create_engine("sqlite:///:memory:")
+        SQLModel.metadata.create_all(engine)
+        with Session(engine) as session:
+            repo = DBExpenseRepo(db_url="sqlite:///:memory:", session=session)
+            assert isinstance(repr(repo), str)
+
+    def test_db_expense_repo_close_is_idempotent(self, owned_repo):
+        """close() should be safe to call multiple times."""
+        owned_repo = DBExpenseRepo(db_url="sqlite:///:memory:")
+        owned_repo.close()
+        owned_repo.close()  # should not raise
+
+    def test_same_url_reuses_owned_singleton(self):
+        first = DBExpenseRepo(db_url="sqlite:///:memory:")
+        second = DBExpenseRepo(db_url="sqlite:///:memory:")
+
+        assert first is second
+
+        first.close()
+        assert not first.is_open()
+        assert not second.is_open()
+
+    def test_equivalent_parsed_urls_reuse_process_engine(self):
+        first = DBExpenseRepo(
+            db_url="sqlite:///:memory:?timeout=10&check_same_thread=false"
+        )
+        second = DBExpenseRepo(
+            db_url="sqlite:///:memory:?check_same_thread=false&timeout=10"
+        )
+
+        assert first is second
+
+    def test_different_url_raises_while_engine_is_active(self):
+        first_url = "sqlite://"
+        second_url = "sqlite:///:memory:"
+        DBExpenseRepo(db_url=first_url)
+
+        with pytest.raises(RuntimeError, match="already has an active instance"):
+            DBExpenseRepo(db_url=second_url)
+
+    def test_close_disposes_singleton_and_allows_new_url(self):
+        first_url = "sqlite://"
+        second_url = "sqlite:///:memory:"
+        old_repo = DBExpenseRepo(db_url=first_url)
+        alias = DBExpenseRepo(db_url=first_url)
+
+        with patch.object(
+            old_repo._engine, "dispose", wraps=old_repo._engine.dispose
+        ) as mocked_dispose:
+            alias.close()
+            old_repo.close()
+
+        assert mocked_dispose.call_count == 1
+
+        assert not old_repo.is_open()
+        assert not alias.is_open()
+        with pytest.raises(RuntimeError, match="closed"):
+            old_repo.get_all()
+
+        new_repo = DBExpenseRepo(db_url=second_url)
+        assert new_repo is not old_repo
+        assert new_repo.is_open()
+
+    def test_injected_session_is_exempt_from_process_engine(self):
+        owned_url = "sqlite://"
+        external_engine = create_engine("sqlite:///:memory:")
+        SQLModel.metadata.create_all(external_engine)
+
+        try:
+            owned_repo = DBExpenseRepo(db_url=owned_url)
+            with Session(external_engine) as session:
+                first_injected = DBExpenseRepo(
+                    db_url="sqlite:///ignored.db", session=session
+                )
+                second_injected = DBExpenseRepo(
+                    db_url="sqlite:///also-ignored.db", session=session
+                )
+
+                assert first_injected is not second_injected
+                assert first_injected is not owned_repo
+
+                owned_repo.close()
+
+                assert first_injected.is_open()
+                assert second_injected.is_open()
+                first_injected.add(Expense(amount=Decimal("1.00")))
+                assert len(second_injected) == 1
+
+                first_injected.close()
+                assert not first_injected.is_open()
+                assert second_injected.is_open()
+                assert session.is_active
+        finally:
+            external_engine.dispose()
+
+    def test_concurrent_construction_creates_one_engine(self):
+        db_url = "sqlite:///:memory:"
+        worker_count = 4
+        barrier = Barrier(worker_count)
+
+        def build_repo() -> DBExpenseRepo:
+            barrier.wait()
+            return DBExpenseRepo(db_url=db_url)
+
+        with (
+            patch(
+                "expenses_ai_agent.storage.repo.create_engine", wraps=create_engine
+            ) as mocked_create_engine,
+            patch("expenses_ai_agent.storage.repo.SQLModel.metadata.create_all"),
+            ThreadPoolExecutor(max_workers=worker_count) as executor,
+        ):
+            repos = list(executor.map(lambda _: build_repo(), range(worker_count)))
+
+        assert mocked_create_engine.call_count == 1
+        assert len({id(repo) for repo in repos}) == 1
+
+    def test_failed_initialization_does_not_retain_singleton(self):
+        failed_engine = create_autospec(Engine, instance=True)
+
+        with (
+            patch(
+                "expenses_ai_agent.storage.repo.create_engine",
+                return_value=failed_engine,
+            ),
+            patch(
+                "expenses_ai_agent.storage.repo.SQLModel.metadata.create_all",
+                side_effect=RuntimeError("schema failure"),
+            ),
+            pytest.raises(RuntimeError, match="schema failure"),
+        ):
+            DBExpenseRepo(db_url="sqlite://")
+
+        failed_engine.dispose.assert_called_once_with()
+        assert DBExpenseRepo._owned_instance is None
+
+        repo = DBExpenseRepo(db_url="sqlite:///:memory:")
+        assert repo.is_open()
 
 
 @pytest.fixture
@@ -404,3 +686,35 @@ class TestCLIApp:
                 result = cli_runner.invoke(app, ["Test expense"])
                 output = result.output
                 assert "Food" in output or "5.50" in output or "Category" in output
+
+    def test_cli_verbose_outputs_comments(
+        self, cli_runner, mock_classification_response
+    ):
+        with patch(
+            "expenses_ai_agent.cli.cli.ClassificationService"
+        ) as mock_service_cls:
+            mock_service = create_autospec(ClassificationService)
+            mock_result = create_autospec(ClassificationResult)
+            mock_result.response = mock_classification_response
+            mock_result.persisted = False
+            mock_service.classify.return_value = mock_result
+            mock_service_cls.return_value = mock_service
+
+            with patch("expenses_ai_agent.cli.cli.OpenAIAssistant"):
+                result = cli_runner.invoke(app, ["Test expense", "--verbose"])
+
+        assert result.exit_code == 0
+        assert "Coffee purchase" in result.output
+
+    def test_cli_closes_owned_repo(self, cli_runner, mock_classification_response):
+        assistant = create_autospec(Assistant)
+        assistant.completion.return_value = mock_classification_response
+        repo = DBExpenseRepo("sqlite:///:memory:")
+        service = ClassificationService(assistant=assistant, expense_repo=repo)
+
+        with patch("expenses_ai_agent.cli.cli._build_service", return_value=service):
+            result = cli_runner.invoke(app, ["Test expense", "--db"])
+
+        assert result.exit_code == 0
+        assert not repo.is_open()
+        assert DBExpenseRepo._owned_instance is None

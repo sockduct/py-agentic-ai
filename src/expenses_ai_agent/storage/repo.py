@@ -1,12 +1,22 @@
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timezone
+from threading import Lock
 from types import TracebackType
+from typing import ClassVar, final
+from warnings import warn
 
 from sqlalchemy import func
+from sqlalchemy.engine import URL, Engine, make_url
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from expenses_ai_agent.storage.exceptions import ExpenseNotFoundError
-from expenses_ai_agent.storage.models import Expense, ExpenseCategory
+from expenses_ai_agent.storage.models import (
+    Currency,
+    Expense,
+    ExpenseCategory,
+    UserPreference,
+)
 
 
 class ExpenseRepository(ABC):
@@ -123,25 +133,80 @@ class InMemoryExpenseRepository(ExpenseRepository):
         ]
 
 
+@final
 class DBExpenseRepo(ExpenseRepository):
     """Support CRUD and search for selected database."""
 
-    def __init__(self, db_url: str, session: Session | None = None) -> None:
+    _owned_instance: ClassVar[DBExpenseRepo | None] = None
+    _owned_db_url: ClassVar[URL | None] = None
+    _singleton_lock: ClassVar[Lock] = Lock()
+
+    _engine: Engine
+    _session: Session | None
+    _owns_session: bool
+    _open: bool
+
+    def __new__(cls, db_url: str, session: Session | None = None) -> DBExpenseRepo:
         if session is not None:
-            self._session = session
-            self._owns_session = False
-            self._entered_context = True
-        else:
-            engine = create_engine(db_url)
-            SQLModel.metadata.create_all(
-                engine
-            )  # ensures the table exists in production
-            self._session = Session(engine)
-            self._owns_session = True
-            self._entered_context = False
+            return super().__new__(cls)
+
+        requested_url = make_url(db_url)
+        owner = DBExpenseRepo
+
+        with owner._singleton_lock:
+            if owner._owned_instance is not None:
+                if requested_url != owner._owned_db_url:
+                    active_url = cls._safe_url(owner._owned_db_url)
+                    new_url = cls._safe_url(requested_url)
+                    raise RuntimeError(
+                        "DBExpenseRepo already has an active instance for "
+                        f"{active_url}; cannot initialize one for {new_url}. "
+                        "Close the active DBExpenseRepo first."
+                    )
+                return owner._owned_instance
+
+            instance = super().__new__(cls)
+            engine = create_engine(requested_url)
+            try:
+                SQLModel.metadata.create_all(
+                    engine
+                )  # ensures the table exists in production
+            except Exception:
+                engine.dispose()
+                raise
+
+            instance._engine = engine
+            instance._session = None
+            instance._owns_session = True
+            instance._open = True
+            owner._owned_instance = instance
+            owner._owned_db_url = requested_url
+            return instance
+
+    def __init__(self, db_url: str, session: Session | None = None) -> None:
+        if session is None:
+            return
+
+        self._session = session
+        self._owns_session = False
+        self._open = True
+
+    @staticmethod
+    def _safe_url(db_url: URL | None) -> str:
+        if db_url is None:
+            return "unknown"
+        return db_url.render_as_string(hide_password=True)
 
     def __enter__(self) -> DBExpenseRepo:
-        self._entered_context = True
+        warn(
+            f"Context manager protocol is deprecated for {self.__class__.__name__} "
+            "- call close() explicitly.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._require_open()
+        if not self._owns_session:
+            raise RuntimeError("Cannot manage external session!")
         return self
 
     def __exit__(
@@ -153,80 +218,229 @@ class DBExpenseRepo(ExpenseRepository):
         self.close()
 
     def __len__(self) -> int:
-        self._ensure_usable()
+        self._require_open()
         statement = select(func.count()).select_from(Expense)
+        if self._owns_session:
+            with Session(self._engine) as session:
+                return session.exec(statement).one()
+        assert self._session is not None
         return self._session.exec(statement).one()
 
     def __repr__(self) -> str:
-        state = "open" if self._entered_context else "closed"
-        return f"{self.__class__.__name__}(state={state})"
+        db_url: object
+        if self._owns_session and hasattr(self._engine, "url"):
+            db_url = self._engine.url
+            state = "open" if self.is_open() else "closed"
+        elif self._session is not None and self._session.bind is not None:
+            db_url = getattr(self._session.bind, "url", "unknown")
+            state = "injected" if self.is_open() else "closed"
+        else:
+            db_url = "unknown"
+            state = "unknown"
+
+        return f"{self.__class__.__name__}(db_url={db_url}): {state}"
 
     def __str__(self) -> str:
-        self._ensure_usable()
-        return "\n".join(
-            f"{rownum}: {element}"
-            for rownum, element in enumerate(self.get_all(), start=1)
-        )
+        if not self.is_open():
+            return "Database connection is closed."
 
-    def _ensure_usable(self) -> None:
-        if self._owns_session and not self._entered_context:
-            raise RuntimeError(
-                "DBExpenseRepo created without a session must be used as a context manager."
+        try:
+            return "\n".join(
+                f"{rownum}: {element}"
+                for rownum, element in enumerate(self.get_all(), start=1)
             )
+        except SQLAlchemyError:
+            if self._owns_session:
+                return "Unable to retrieve data from the database."
+            return "Unable to access external session."
+
+    def is_open(self) -> bool:
+        if not self._open:
+            return False
+        if not self._owns_session:
+            return True
+        return self is DBExpenseRepo._owned_instance
+
+    def _require_open(self) -> None:
+        if not self.is_open():
+            self._open = False
+            raise RuntimeError("DBExpenseRepo is closed.")
+
+    def close(self) -> None:
+        if not self._open:
+            return
+
+        if not self._owns_session:
+            self._open = False
+            return
+
+        owner = DBExpenseRepo
+        with owner._singleton_lock:
+            if self is not owner._owned_instance:
+                self._open = False
+                return
+
+            self._engine.dispose()
+            self._open = False
+            owner._owned_instance = None
+            owner._owned_db_url = None
 
     def add(self, expense: Expense) -> None:
         """Add an expense to the repository."""
-        self._ensure_usable()
-        self._session.add(expense)
-        self._session.commit()
-        self._session.refresh(expense)
+        self._require_open()
 
-    def close(self) -> None:
         if self._owns_session:
-            self._session.close()
-            self._entered_context = False
+            with Session(self._engine) as session:
+                session.add(expense)
+                session.commit()
+                session.refresh(expense)
+        else:
+            assert self._session is not None
+            self._session.add(expense)
+            self._session.commit()
+            self._session.refresh(expense)
 
     def update(self, expense: Expense) -> None:
         """Update an expense in the repository."""
-        if expense.id is None or self.get(expense.id) is None:
-            raise ExpenseNotFoundError(
-                f"Expense with ID {expense.id} not found for update."
-            )
-        self.add(expense)
+        self._require_open()
+
+        if not self._owns_session:
+            assert self._session is not None
+            if expense.id is None or self._session.get(Expense, expense.id) is None:
+                raise ExpenseNotFoundError(
+                    f"Expense with ID {expense.id} not found for update."
+                )
+            self._session.merge(expense)
+            self._session.commit()
+            return
+
+        with Session(self._engine) as session:
+            if expense.id is None or session.get(Expense, expense.id) is None:
+                raise ExpenseNotFoundError(
+                    f"Expense with ID {expense.id} not found for update."
+                )
+            session.merge(expense)
+            session.commit()
 
     def get(self, expense_id: int) -> Expense | None:
         """Retrieve an expense by its ID."""
-        self._ensure_usable()
-        return self._session.get(Expense, expense_id)
+        self._require_open()
+
+        if not self._owns_session:
+            assert self._session is not None
+            return self._session.get(Expense, expense_id)
+        with Session(self._engine) as session:
+            return session.get(Expense, expense_id)
 
     def get_all(self) -> list[Expense]:
         """Retrieve all expenses."""
-        self._ensure_usable()
+        self._require_open()
+
         statement = select(Expense)
-        return list(self._session.exec(statement))
+        if not self._owns_session:
+            assert self._session is not None
+            return list(self._session.exec(statement))
+        with Session(self._engine) as session:
+            return list(session.exec(statement))
 
     def delete(self, expense_id: int) -> None:
         """Remove an expense by its ID."""
-        if (expense := self.get(expense_id)) is None:
-            raise ExpenseNotFoundError(f"Expense with ID {expense_id} not found.")
-        self._ensure_usable()
-        self._session.delete(expense)
-        self._session.commit()
+        self._require_open()
+
+        if not self._owns_session:
+            assert self._session is not None
+            expense = self._session.get(Expense, expense_id)
+            if expense is None:
+                raise ExpenseNotFoundError(f"Expense with ID {expense_id} not found.")
+            self._session.delete(expense)
+            self._session.commit()
+            return
+
+        with Session(self._engine) as session:
+            expense = session.get(Expense, expense_id)
+            if expense is None:
+                raise ExpenseNotFoundError(f"Expense with ID {expense_id} not found.")
+            session.delete(expense)
+            session.commit()
 
     def search_by_category(self, category: ExpenseCategory) -> list[Expense]:
         """Search for expenses by defined categories."""
-        self._ensure_usable()
+        self._require_open()
+
         statement = select(Expense).where(Expense.category == category)
-        return list(self._session.exec(statement))
+        if not self._owns_session:
+            assert self._session is not None
+            return list(self._session.exec(statement))
+        with Session(self._engine) as session:
+            return list(session.exec(statement))
 
     def search_by_dates(self, start: datetime, end: datetime) -> list[Expense]:
         """Search for expenses by defined dates."""
-        self._ensure_usable()
+        self._require_open()
+
         statement = select(Expense).where(Expense.date >= start, Expense.date < end)
-        return list(self._session.exec(statement))
+        if not self._owns_session:
+            assert self._session is not None
+            return list(self._session.exec(statement))
+        with Session(self._engine) as session:
+            return list(session.exec(statement))
 
     def list_by_user(self, telegram_user_id: int) -> list[Expense]:
         """Search for expenses by defined user."""
-        self._ensure_usable()
+        self._require_open()
+
         statement = select(Expense).where(Expense.telegram_user_id == telegram_user_id)
-        return list(self._session.exec(statement))
+        if not self._owns_session:
+            assert self._session is not None
+            return list(self._session.exec(statement))
+        with Session(self._engine) as session:
+            return list(session.exec(statement))
+
+
+class DBUserPreferenceRepo:
+    def __init__(self, db_url: str, session: Session | None = None):
+        self._owns_engine = session is None
+        if session is None:
+            self._engine = create_engine(db_url)
+            SQLModel.metadata.create_all(self._engine)
+            self.db = Session(self._engine)
+        else:
+            self._engine = None
+            self.db = session
+
+    def __enter__(self) -> "DBUserPreferenceRepo":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    def close(self) -> None:
+        self.db.close()
+        if self._owns_engine and self._engine is not None:
+            self._engine.dispose()
+
+    def get_by_user_id(self, telegram_user_id: int) -> UserPreference | None:
+        return self.db.exec(
+            select(UserPreference).where(
+                UserPreference.telegram_user_id == telegram_user_id
+            )
+        ).first()
+
+    def upsert(self, telegram_user_id: int, currency: Currency) -> UserPreference:
+        pref = self.get_by_user_id(telegram_user_id)
+        if pref is None:
+            pref = UserPreference(
+                telegram_user_id=telegram_user_id, preferred_currency=currency
+            )
+            self.db.add(pref)
+        else:
+            pref.preferred_currency = currency
+            pref.updated_at = datetime.now(timezone.utc)
+        self.db.commit()
+        self.db.refresh(pref)
+        return pref

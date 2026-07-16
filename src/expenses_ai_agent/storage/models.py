@@ -103,3 +103,11 @@ class Expense(SQLModel, table=True):
             category=category,
             telegram_user_id=telegram_user_id,
         )
+
+
+class UserPreference(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    telegram_user_id: int = Field(unique=True, index=True)
+    preferred_currency: Currency = Field(default=Currency.EUR)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

@@ -1,5 +1,7 @@
 import inspect
-from datetime import datetime
+
+# Commenting out for now:
+# from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Protocol  # used in test_assistant_protocol_exists assertion below
@@ -10,7 +12,7 @@ from pytest import raises
 
 from expenses_ai_agent.llms.base import COST, MESSAGES, Assistant, LLMProvider
 from expenses_ai_agent.llms.exceptions import ResponseError
-from expenses_ai_agent.llms.openai import OpenAIAssistant
+from expenses_ai_agent.llms.openai import OpenAIAssistant, SortBy
 from expenses_ai_agent.llms.output import ExpenseCategorizationResponse
 from expenses_ai_agent.storage.models import Currency
 from expenses_ai_agent.tools.tools import (
@@ -57,6 +59,8 @@ class TestExpenseCategorizationResponse:
 
         assert response.comments == "Taxi ride to airport"
 
+    '''
+    # Commenting out test test for now - not using this field/feature:
     def test_response_has_timestamp(self):
         """Response should include a timestamp."""
         response = ExpenseCategorizationResponse(
@@ -69,6 +73,7 @@ class TestExpenseCategorizationResponse:
 
         assert hasattr(response, "timestamp")
         assert isinstance(response.timestamp, datetime)
+    '''
 
     def test_response_is_pydantic_model(self):
         """Response should be a Pydantic BaseModel for validation."""
@@ -219,6 +224,24 @@ class TestCurrencyConversion:
 
             assert result == Decimal("150")
 
+    def test_convert_currency_missing_rate_raises_lookup_error(self):
+        """Missing conversion_rate should raise a lookup error."""
+        with (
+            patch("expenses_ai_agent.utils.currency.config", return_value="test-key"),
+            patch("expenses_ai_agent.utils.currency.requests.get") as mock_get,
+        ):
+            mock_response = MagicMock()
+            mock_response.json.return_value = {"result": "error"}
+            mock_response.raise_for_status = MagicMock()
+            mock_get.return_value = mock_response
+
+            with raises(LookupError, match="Unable to obtain exchange rate"):
+                convert_currency(
+                    Decimal("100"),
+                    from_currency=Currency.EUR,
+                    to_currency=Currency.USD,
+                )
+
 
 class TestDateFormatter:
     """Tests for the date formatting utility."""
@@ -352,6 +375,14 @@ class TestOpenAIAssistant:
             )
             assert cost == Decimal("3.79")
 
+    def test_calculate_cost_unsupported_model_raises(self):
+        """Cost calculation should fail clearly for unsupported models."""
+        with patch("expenses_ai_agent.llms.openai.OpenAI"):
+            assistant = OpenAIAssistant(model="gpt-test", api_key="test-key")
+
+            with raises(NotImplementedError, match="gpt-test"):
+                assistant.calculate_cost(prompt_tokens=100, completion_tokens=50)
+
     def test_completion_calls_openai_and_returns_response(self):
         """completion should call the OpenAI API and return ExpenseCategorizationResponse."""
         # MagicMock is used here (not create_autospec) because the OpenAI SDK's
@@ -380,6 +411,7 @@ class TestOpenAIAssistant:
             mock_response.output_parsed = mock_parsed
             mock_response.usage.input_tokens = 100
             mock_response.usage.output_tokens = 50
+            mock_response.usage.input_tokens_details.cached_tokens = 0
             mock_client.responses.parse.return_value = mock_response
 
             assistant = OpenAIAssistant(model="gpt-4o-mini", api_key="test-key")
@@ -391,6 +423,57 @@ class TestOpenAIAssistant:
             # mock_client.beta.chat.completions.parse.assert_called_once()
             # Replacement responses API:
             mock_client.responses.parse.assert_called_once()
+
+    def test_completion_returns_response_without_usage(self):
+        """completion should return parsed output when token usage is unavailable."""
+        with patch("expenses_ai_agent.llms.openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_openai_cls.return_value = mock_client
+
+            mock_parsed = ExpenseCategorizationResponse(
+                category="Food",
+                total_amount=Decimal("5.50"),
+                currency=Currency.USD,
+                confidence=0.95,
+                cost=Decimal("0.001"),
+            )
+            mock_response = MagicMock()
+            mock_response.output_parsed = mock_parsed
+            mock_response.usage = None
+            mock_client.responses.parse.return_value = mock_response
+
+            assistant = OpenAIAssistant(model="gpt-4o-mini", api_key="test-key")
+
+            result = assistant.completion([{"role": "user", "content": "Coffee"}])
+
+            assert result is mock_parsed
+            assert result.cost == Decimal("0.001")
+
+    def test_completion_handles_missing_input_token_details(self):
+        """completion should treat missing cached token details as zero."""
+        with patch("expenses_ai_agent.llms.openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_openai_cls.return_value = mock_client
+
+            mock_parsed = ExpenseCategorizationResponse(
+                category="Food",
+                total_amount=Decimal("5.50"),
+                currency=Currency.USD,
+                confidence=0.95,
+                cost=Decimal("0.001"),
+            )
+            mock_response = MagicMock()
+            mock_response.output_parsed = mock_parsed
+            mock_response.usage.input_tokens = 1_000_000
+            mock_response.usage.output_tokens = 1_000_000
+            mock_response.usage.input_tokens_details = None
+            mock_client.responses.parse.return_value = mock_response
+
+            assistant = OpenAIAssistant(model="gpt-4o-mini", api_key="test-key")
+
+            result = assistant.completion([{"role": "user", "content": "Coffee"}])
+
+            assert result.cost == Decimal("0.75")
 
     def test_completion_calls_openai_and_handles_parse_error(self):
         """check completion handles parse error"""
@@ -414,3 +497,41 @@ class TestOpenAIAssistant:
             error_message = str(err.value)
             assert "Error processing request." in error_message
             assert "Unable to fully process the request." in error_message
+
+    def test_get_available_models_sorts_by_name(self):
+        """Available models should sort by ID by default."""
+        with patch("expenses_ai_agent.llms.openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_openai_cls.return_value = mock_client
+            mock_client.models.list.return_value.data = [
+                MagicMock(id="z-model", created=1_704_067_200),
+                MagicMock(id="a-model", created=1_672_531_200),
+            ]
+
+            assistant = OpenAIAssistant(model="gpt-4o-mini", api_key="test-key")
+
+            models = assistant.get_available_models()
+
+            assert models[0].startswith("a-model")
+            assert models[1].startswith("z-model")
+            assert "created on" in models[0]
+
+    def test_get_available_models_sorts_by_creation_descending(self):
+        """Available models should support creation-date descending order."""
+        with patch("expenses_ai_agent.llms.openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_openai_cls.return_value = mock_client
+            mock_client.models.list.return_value.data = [
+                MagicMock(id="old-model", created=1_672_531_200),
+                MagicMock(id="new-model", created=1_704_067_200),
+            ]
+
+            assistant = OpenAIAssistant(model="gpt-4o-mini", api_key="test-key")
+
+            models = assistant.get_available_models(
+                sort_by=SortBy.CREATION,
+                direction="desc",
+            )
+
+            assert models[0].startswith("new-model")
+            assert models[1].startswith("old-model")
