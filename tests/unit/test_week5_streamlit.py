@@ -1,3 +1,4 @@
+from expenses_ai_agent.streamlit import app
 from expenses_ai_agent.streamlit.api_client import ExpenseAPIClient
 
 
@@ -32,3 +33,11 @@ class TestStreamlitAPIClient:
         """Client should have method to get analytics summary."""
         client = ExpenseAPIClient(base_url="http://test")
         assert hasattr(client, "get_summary") or hasattr(client, "get_analytics")
+
+
+class TestStreamlitApp:
+    """Tests for the main Streamlit app."""
+
+    def test_app_module_exists(self):
+        """Main app module should be importable."""
+        assert app is not None
