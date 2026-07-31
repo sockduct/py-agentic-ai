@@ -51,7 +51,9 @@ def list_expenses(
     start = (page - 1) * page_size
     end = start + page_size
     return ExpenseListResponse(
-        items=expenses[start:end],
+        items=[
+            ExpenseResponse.model_validate(expense) for expense in expenses[start:end]
+        ],
         total=len(expenses),
         page=page,
         page_size=page_size,

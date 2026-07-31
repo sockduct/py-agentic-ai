@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import SQLModel, create_engine
 
-from expenses_ai_agent.api.routes import analytics, categories, expenses, health
+from expenses_ai_agent.api.routes import analytics, categories, expenses, health, root
 
 engine = create_engine("sqlite:///expenses.db")
 
@@ -32,6 +32,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(root.router, prefix="")
 app.include_router(expenses.router, prefix="/api/v1")
 app.include_router(categories.router, prefix="/api/v1")
 app.include_router(analytics.router, prefix="/api/v1")

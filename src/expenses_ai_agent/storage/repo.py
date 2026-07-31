@@ -177,7 +177,7 @@ class InMemoryExpenseRepository(ExpenseRepository):
             )
         }
         return {
-            key: sum(val.amount for val in values)
+            key: sum((val.amount for val in values), start=Decimal(0))
             for key, values in grouped_values.items()
         }
 
@@ -496,7 +496,7 @@ class DBExpenseRepo(ExpenseRepository):
             )
         }
         return {
-            key: sum(val.amount for val in values)
+            key: sum((val.amount for val in values), start=Decimal(0))
             for key, values in grouped_values.items()
         }
 
@@ -526,6 +526,7 @@ class DBExpenseRepo(ExpenseRepository):
 
 class DBUserPreferenceRepo:
     def __init__(self, db_url: str, session: Session | None = None):
+        self._engine: Engine | None
         self._owns_engine = session is None
         if session is None:
             self._engine = create_engine(db_url)
