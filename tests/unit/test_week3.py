@@ -5,6 +5,7 @@ from threading import Barrier
 from unittest.mock import create_autospec, patch
 
 import pytest
+from openai import OpenAIError
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, SQLModel, create_engine
 from typer.testing import CliRunner
@@ -298,6 +299,26 @@ class TestDBExpenseRepo:
         with pytest.raises(ExpenseNotFoundError):
             repo.delete(99999)
 
+    def test_db_expense_repo_update_with_injected_session(self, db_session):
+        repo = DBExpenseRepo(db_url="sqlite:///:memory:", session=db_session)
+        expense = Expense(amount=Decimal("10.00"), currency=Currency.EUR)
+        repo.add(expense)
+        expense.amount = Decimal("20.00")
+
+        repo.update(expense)
+
+        updated = repo.get(expense.id)
+        assert updated is not None
+        assert updated.amount == Decimal("20.00")
+
+    def test_db_expense_repo_update_missing_with_injected_session_raises(
+        self, db_session
+    ):
+        repo = DBExpenseRepo(db_url="sqlite:///:memory:", session=db_session)
+
+        with pytest.raises(ExpenseNotFoundError, match="999"):
+            repo.update(Expense(id=999, amount=Decimal("10.00")))
+
     def test_db_expense_repo_search_by_category(self, db_session):
         repo = DBExpenseRepo(db_url="sqlite:///:memory:", session=db_session)
 
@@ -414,6 +435,10 @@ class TestDBExpenseRepo:
         with pytest.raises(ExpenseNotFoundError):
             owned_repo.update(Expense(id=999, amount=Decimal("10.00")))
 
+    def test_db_expense_repo_owned_session_delete_missing_raises(self, owned_repo):
+        with pytest.raises(ExpenseNotFoundError, match="999"):
+            owned_repo.delete(999)
+
     def test_db_expense_repo_owned_session_searches(self, owned_repo):
         now = datetime.now(timezone.utc)
         yesterday = now - timedelta(days=1)
@@ -458,6 +483,38 @@ class TestDBExpenseRepo:
         assert len(recent_expenses) == 2
         assert len(user_expenses) == 2
 
+    def test_db_expense_repo_owned_session_aggregates(self, owned_repo):
+        owned_repo.add(
+            Expense(
+                amount=Decimal("10.00"),
+                date=datetime(2024, 1, 5, tzinfo=timezone.utc),
+                category=ExpenseCategory.FOOD,
+                telegram_user_id=100,
+            )
+        )
+        owned_repo.add(
+            Expense(
+                amount=Decimal("15.00"),
+                date=datetime(2024, 1, 20, tzinfo=timezone.utc),
+                category=ExpenseCategory.FOOD,
+                telegram_user_id=100,
+            )
+        )
+        owned_repo.add(
+            Expense(
+                amount=Decimal("99.00"),
+                date=datetime(2024, 2, 1, tzinfo=timezone.utc),
+                category=ExpenseCategory.TRANSPORT,
+                telegram_user_id=200,
+            )
+        )
+
+        monthly = owned_repo.get_monthly_totals(telegram_user_id=100)
+        categories = owned_repo.get_category_totals(telegram_user_id=100)
+
+        assert monthly == {"2024-01": Decimal("25.00")}
+        assert categories == {str(ExpenseCategory.FOOD): Decimal("25.00")}
+
     def test_db_expense_repo_update_with_owned_session(self, owned_repo):
         """update() should work when the repo owns its session (detached object round-trip)."""
         expense = Expense(amount=Decimal("10.00"), currency=Currency.EUR)
@@ -490,6 +547,28 @@ class TestDBExpenseRepo:
         owned_repo = DBExpenseRepo(db_url="sqlite:///:memory:")
         owned_repo.close()
         owned_repo.close()  # should not raise
+
+    def test_owned_context_manager_warns_and_closes(self):
+        repo = DBExpenseRepo(db_url="sqlite:///:memory:")
+
+        with pytest.warns(DeprecationWarning, match="Context manager protocol"):
+            with repo as managed_repo:
+                assert managed_repo is repo
+                assert repo.is_open()
+
+        assert not repo.is_open()
+
+    def test_context_manager_rejects_injected_session(self, db_session):
+        repo = DBExpenseRepo(db_url="sqlite:///:memory:", session=db_session)
+
+        with (
+            pytest.warns(DeprecationWarning, match="Context manager protocol"),
+            pytest.raises(RuntimeError, match="external session"),
+        ):
+            with repo:
+                pass
+
+        repo.close()
 
     def test_same_url_reuses_owned_singleton(self):
         first = DBExpenseRepo(db_url="sqlite:///:memory:")
@@ -718,3 +797,14 @@ class TestCLIApp:
         assert result.exit_code == 0
         assert not repo.is_open()
         assert DBExpenseRepo._owned_instance is None
+
+    def test_cli_reports_openai_error_and_debug_hint(self, cli_runner):
+        with patch(
+            "expenses_ai_agent.cli.cli._build_service",
+            side_effect=OpenAIError("service unavailable"),
+        ):
+            result = cli_runner.invoke(app, ["Test expense"])
+
+        assert result.exit_code == 1
+        assert "Error: service unavailable" in result.output
+        assert "Run with --debug for full traceback" in result.output

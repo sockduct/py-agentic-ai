@@ -1,10 +1,16 @@
 from decimal import Decimal
-from unittest.mock import create_autospec, patch
+from unittest.mock import MagicMock, create_autospec, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
-from expenses_ai_agent.api.deps import get_expense_repo, get_user_id
+from expenses_ai_agent.api.deps import (
+    DATABASE_URL,
+    get_db_session,
+    get_expense_repo,
+    get_user_id,
+)
 from expenses_ai_agent.api.main import app
 from expenses_ai_agent.api.schemas.expense import (
     ExpenseClassifyRequest,
@@ -38,6 +44,19 @@ class TestFastAPIApp:
         assert "status" in data
         assert data["status"] in ["ok", "healthy", "OK"]
 
+    def test_root_endpoint_lists_api_routes(self):
+        with TestClient(app) as client:
+            response = client.get("/")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "analytics": "/api/v1/analytics",
+            "categories": "/api/v1/categories",
+            "documentation": "/docs",
+            "expenses": "/api/v1/expenses",
+            "health": "/api/v1/health",
+        }
+
 
 class TestDependencyInjection:
     """Tests for dependency injection functions."""
@@ -49,6 +68,35 @@ class TestDependencyInjection:
     def test_get_user_id_exists(self):
         """get_user_id dependency should be importable."""
         assert callable(get_user_id)
+
+    def test_get_db_session_yields_and_closes_session(self):
+        session = MagicMock()
+        session_context = MagicMock()
+        session_context.__enter__.return_value = session
+        engine = MagicMock()
+
+        with patch(
+            "expenses_ai_agent.api.deps.Session", return_value=session_context
+        ) as session_cls:
+            session_generator = get_db_session(engine)
+            yielded_session = next(session_generator)
+            session_generator.close()
+
+        assert yielded_session is session
+        session_cls.assert_called_once_with(engine)
+        session_context.__exit__.assert_called_once()
+
+    def test_get_expense_repo_uses_injected_session(self):
+        session = MagicMock()
+        expected_repo = MagicMock()
+
+        with patch(
+            "expenses_ai_agent.api.deps.DBExpenseRepo", return_value=expected_repo
+        ) as repo_cls:
+            repo = get_expense_repo(session)
+
+        assert repo is expected_repo
+        repo_cls.assert_called_once_with(db_url=DATABASE_URL, session=session)
 
 
 class TestAPISchemas:
@@ -68,6 +116,10 @@ class TestAPISchemas:
         fields = ExpenseListResponse.model_fields
         assert "items" in fields
         assert "total" in fields
+
+    def test_expense_classify_request_rejects_whitespace(self):
+        with pytest.raises(ValidationError, match="description cannot be empty"):
+            ExpenseClassifyRequest(description="   ")
 
 
 @pytest.fixture
@@ -139,12 +191,40 @@ class TestExpenseRoutes:
 
         assert response.status_code == 404
 
+    def test_get_expense_for_other_user_returns_404(
+        self, test_client, mock_expense_repo
+    ):
+        response = test_client.get("/api/v1/expenses/1", headers={"X-User-ID": "999"})
+
+        assert response.status_code == 404
+        mock_expense_repo.get.assert_called_once_with(1)
+
     def test_delete_expense(self, test_client, mock_expense_repo):
         """DELETE /expenses/{id} should remove expense."""
         response = test_client.delete("/api/v1/expenses/1")
 
         assert response.status_code == 204
         mock_expense_repo.delete.assert_called_with(1)
+
+    def test_delete_expense_for_other_user_returns_403(
+        self, test_client, mock_expense_repo
+    ):
+        response = test_client.delete(
+            "/api/v1/expenses/1", headers={"X-User-ID": "999"}
+        )
+
+        assert response.status_code == 403
+        mock_expense_repo.delete.assert_not_called()
+
+    def test_delete_nonexistent_expense_returns_404(
+        self, test_client, mock_expense_repo
+    ):
+        mock_expense_repo.delete.side_effect = ExpenseNotFoundError(999)
+
+        response = test_client.delete("/api/v1/expenses/1")
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Expense not found"
 
     def test_classify_expense(self, test_client, mock_expense_repo):
         """POST /expenses/classify should classify and store expense."""

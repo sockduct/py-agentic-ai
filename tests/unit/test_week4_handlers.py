@@ -169,6 +169,21 @@ class TestExpenseConversationHandler:
             mock_update.message.reply_text.call_count >= 2
         )  # warning note + classification
 
+    async def test_classification_failure_replies_and_ends(
+        self, mock_update, mock_context
+    ):
+        handler = self._handler()
+        service = MagicMock()
+        service.classify.side_effect = RuntimeError("service unavailable")
+
+        with patch.object(handler, "_build_service", return_value=service):
+            result = await handler.handle_expense_text(mock_update, mock_context)
+
+        assert result == ConversationHandler.END
+        mock_update.message.reply_text.assert_awaited_once_with(
+            "Sorry, I couldn't classify that. Please try again in a moment."
+        )
+
     async def test_category_selection_session_expired(
         self, mock_callback_update, mock_context
     ):
@@ -227,14 +242,27 @@ class TestCurrencyHandler:
 
 class TestDBUserPreferenceRepoIntegration:
     def test_upsert_inserts_then_updates(self):
-        repo = DBUserPreferenceRepo(db_url="sqlite:///:memory:")
-        repo.upsert(telegram_user_id=42, currency=Currency.USD)
-        assert repo.get_by_user_id(42).preferred_currency == Currency.USD
-        repo.upsert(telegram_user_id=42, currency=Currency.EUR)
-        assert repo.get_by_user_id(42).preferred_currency == Currency.EUR
+        with DBUserPreferenceRepo(db_url="sqlite:///:memory:") as repo:
+            repo.upsert(telegram_user_id=42, currency=Currency.USD)
+            assert repo.get_by_user_id(42).preferred_currency == Currency.USD
+            repo.upsert(telegram_user_id=42, currency=Currency.EUR)
+            assert repo.get_by_user_id(42).preferred_currency == Currency.EUR
 
     def test_get_unknown_user_returns_none(self):
-        assert (
-            DBUserPreferenceRepo(db_url="sqlite:///:memory:").get_by_user_id(99999)
-            is None
-        )
+        with DBUserPreferenceRepo(db_url="sqlite:///:memory:") as repo:
+            assert repo.get_by_user_id(99999) is None
+
+    def test_context_manager_closes_owned_resources(self):
+        engine = MagicMock()
+        session = MagicMock()
+
+        with (
+            patch("expenses_ai_agent.storage.repo.create_engine", return_value=engine),
+            patch("expenses_ai_agent.storage.repo.SQLModel.metadata.create_all"),
+            patch("expenses_ai_agent.storage.repo.Session", return_value=session),
+        ):
+            with DBUserPreferenceRepo(db_url="sqlite:///:memory:") as repo:
+                assert repo.db is session
+
+        session.close.assert_called_once_with()
+        engine.dispose.assert_called_once_with()
