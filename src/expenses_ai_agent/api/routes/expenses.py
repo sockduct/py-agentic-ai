@@ -70,7 +70,7 @@ def get_expense_by_id(
         expense = expense_repo.get(expense_id)
         if expense and expense.telegram_user_id != user_id:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
+                status_code=status.HTTP_404_NOT_FOUND,
             )
         return ExpenseResponse.model_validate(expense)
     except ExpenseNotFoundError as err:

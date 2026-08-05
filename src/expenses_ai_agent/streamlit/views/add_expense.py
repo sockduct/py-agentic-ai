@@ -14,7 +14,7 @@ def render(api_client: ExpenseAPIClient, user_id: int) -> None:
             description = description.strip()
             if not description:
                 st.warning("Expense description cannot be empty or whitespace")
-                st.rerun()
+                return
             try:
                 with st.spinner(text="Classifying expense...", show_time=True):
                     expense = api_client.classify_expense(

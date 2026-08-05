@@ -168,6 +168,20 @@ class TestAddExpenseView:
         assert not at.exception
         assert len(at.warning) == 1
 
+    def test_empty_submission_does_not_call_api(self):
+        at = _run("""
+            import streamlit as st
+            from unittest.mock import MagicMock
+            from expenses_ai_agent.streamlit.views.add_expense import render
+            if "client" not in st.session_state:
+                st.session_state["client"] = MagicMock()
+            render(st.session_state["client"], user_id=12345)
+        """)
+        at.text_input[0].input("")
+        at.button[0].click().run()
+        assert not at.exception
+        at.session_state["client"].classify_expense.assert_not_called()
+
     def test_shows_success_with_classification_result(self):
         at = _run("""
             from unittest.mock import MagicMock
