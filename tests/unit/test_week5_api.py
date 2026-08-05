@@ -154,7 +154,7 @@ class TestExpenseRoutes:
             mock_service = create_autospec(ClassificationService)
             mock_result = create_autospec(ClassificationResult)
             mock_result.response = ExpenseCategorizationResponse(
-                category="Food",
+                category=ExpenseCategory.FOOD,
                 total_amount=Decimal("5.50"),
                 currency=Currency.USD,
                 confidence=0.95,

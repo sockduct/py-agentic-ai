@@ -3,6 +3,8 @@ from decimal import Decimal
 
 from pydantic import BaseModel, Field, field_validator
 
+from expenses_ai_agent.storage.models import Currency, ExpenseCategory
+
 
 class ExpenseClassifyRequest(BaseModel):
     """Request body for expense classification."""
@@ -17,19 +19,21 @@ class ExpenseClassifyRequest(BaseModel):
     @field_validator("description")
     @classmethod
     def description_not_empty(cls, v: str) -> str:
-        if stripped := v.strip():
-            return stripped
-        else:
+        # sourcery skip: reintroduce-else, swap-if-else-branches, use-named-expression
+        stripped = v.strip()
+        if not stripped:
             raise ValueError("description cannot be empty or whitespace")
+
+        return stripped
 
 
 class ExpenseClassifyResponse(BaseModel):
     """Response body after expense classification."""
 
     id: int
-    category: str
+    category: ExpenseCategory
     amount: Decimal
-    currency: str
+    currency: Currency
     confidence: float
     # created_at: datetime
 
@@ -41,8 +45,8 @@ class ExpenseResponse(BaseModel):
 
     id: int | None
     amount: Decimal
-    currency: str
-    category: str | None
+    currency: Currency
+    category: ExpenseCategory | None
     description: str | None
     telegram_user_id: int | None
     # created_at: datetime

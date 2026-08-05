@@ -1,21 +1,25 @@
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlmodel import SQLModel, create_engine
+from sqlmodel import SQLModel
 
+from expenses_ai_agent.api.deps import get_db_engine
 from expenses_ai_agent.api.routes import analytics, categories, expenses, health, root
-
-engine = create_engine("sqlite:///expenses.db")
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Application lifecycle handler."""
-    # Startup: create database tables
-    SQLModel.metadata.create_all(engine)
-    yield
-    # Shutdown: cleanup resources (if needed)
+    engine = get_db_engine()
+    try:
+        # Startup: create database tables
+        SQLModel.metadata.create_all(engine)
+        yield
+    finally:
+        # Shutdown: cleanup resources (if needed)
+        engine.dispose()
 
 
 app = FastAPI(

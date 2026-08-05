@@ -36,7 +36,11 @@ class OpenAIAssistant:
         """Configure OpenAI API key and initialize OpenAI client."""
         self.model = model
         self.store = store  # Should OpenAI retain responses (enable if needed)
-        api_key = config("OPENAI_API_KEY") if api_key is None else api_key
+        api_key = (
+            cast(str, config("OPENAI_API_KEY", cast=str))
+            if api_key is None
+            else api_key
+        )
         self.client = OpenAI(api_key=api_key)
 
     def completion(self, messages: MESSAGES) -> ExpenseCategorizationResponse:

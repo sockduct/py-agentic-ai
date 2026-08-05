@@ -68,6 +68,10 @@ def get_expense_by_id(
 ) -> ExpenseResponse:
     try:
         expense = expense_repo.get(expense_id)
+        if expense and expense.telegram_user_id != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
         return ExpenseResponse.model_validate(expense)
     except ExpenseNotFoundError as err:
         raise HTTPException(status_code=404, detail="Expense not found") from err
@@ -79,7 +83,16 @@ def delete_expense(
     expense_repo: ExpenseRepository = Depends(get_expense_repo),
     user_id: int = Depends(get_user_id),
 ) -> None:
-    expense_repo.delete(expense_id)
+    try:
+        if (
+            expense := expense_repo.get(expense_id)
+        ) and expense.telegram_user_id != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        expense_repo.delete(expense_id)
+    except ExpenseNotFoundError as err:
+        raise HTTPException(status_code=404, detail="Expense not found") from err
 
 
 # Not sure I met the required spec with this:
@@ -95,5 +108,5 @@ def classify_expense(
 ) -> ExpenseCategorizationResponse:
     assistant: OpenAIAssistant = OpenAIAssistant(model=MODEL)
     service = ClassificationService(assistant=assistant, expense_repo=expense_repo)
-    result = service.classify(request.description)
+    result = service.classify(request.description, persist=True)
     return result.response

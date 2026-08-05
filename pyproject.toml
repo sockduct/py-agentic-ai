@@ -23,6 +23,9 @@ dependencies = [
     "tzdata>=2026.2",
 ]
 
+[tool.fastapi]
+entrypoint = "src.expenses_ai_agent.api.main:app"
+
 [tool.pyrefly]
 project-includes = [
     "**/*.py*",

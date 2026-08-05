@@ -2,11 +2,13 @@ from decimal import Decimal
 
 from pydantic import BaseModel
 
+from expenses_ai_agent.storage.models import ExpenseCategory
+
 
 class CategoryTotal(BaseModel):
     """Spending total for a category."""
 
-    category: str
+    category: ExpenseCategory
     total: Decimal
 
 
