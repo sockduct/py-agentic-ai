@@ -1,4 +1,5 @@
 import logging
+from typing import cast
 
 from decouple import config
 from telegram import Update
@@ -56,9 +57,11 @@ def main() -> None:
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         level=logging.INFO,
     )
-    token = config("TELEGRAM_BOT_TOKEN")
-    db_url = config("DATABASE_URL", default="sqlite:///./expenses.db")
-    api_key = config("OPENAI_API_KEY")
+    token = cast(str, config("TELEGRAM_BOT_TOKEN", cast=str))
+    db_url = cast(
+        str, config("DATABASE_URL", default="sqlite:///./expenses.db", cast=str)
+    )
+    api_key = cast(str, config("OPENAI_API_KEY", cast=str))
 
     application = build_application(token=token, db_url=db_url, api_key=api_key)
     logger.info("Starting bot polling...")

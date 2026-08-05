@@ -1,4 +1,5 @@
 from decimal import Decimal
+from typing import cast
 
 import requests
 from decouple import config
@@ -20,7 +21,11 @@ def convert_currency(
 ) -> Decimal:
     """Provide up-to-date currency conversion."""
 
-    api_key = config("EXCHANGE_RATE_API_KEY") if api_key is None else api_key
+    api_key = (
+        cast(str, config("EXCHANGE_RATE_API_KEY", cast=str))
+        if api_key is None
+        else api_key
+    )
     if from_currency == to_currency:
         return amount
 

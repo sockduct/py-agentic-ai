@@ -219,3 +219,6 @@ __marimo__/
 
 # SQLite database:
 expenses.db
+
+# Temporary directory:
+tmp/

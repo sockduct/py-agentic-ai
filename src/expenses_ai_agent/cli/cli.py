@@ -1,3 +1,5 @@
+from typing import cast
+
 import typer
 from decouple import config
 from openai import OpenAIError
@@ -14,7 +16,7 @@ from expenses_ai_agent.storage.repo import DBExpenseRepo
 
 MODEL = "gpt-4o-mini"
 # Persistent storage requires configuring a value in .env:
-DB_URL = config("DATABASE_URL", default="sqlite:///:memory:")
+DB_URL = cast(str, config("DATABASE_URL", default="sqlite:///:memory:", cast=str))
 
 
 app = typer.Typer(

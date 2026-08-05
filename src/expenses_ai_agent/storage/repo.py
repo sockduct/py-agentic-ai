@@ -1,5 +1,8 @@
 from abc import ABC, abstractmethod
+from collections import defaultdict
+from collections.abc import Callable
 from datetime import datetime, timezone
+from decimal import Decimal
 from threading import Lock
 from types import TracebackType
 from typing import ClassVar, final
@@ -17,6 +20,8 @@ from expenses_ai_agent.storage.models import (
     ExpenseCategory,
     UserPreference,
 )
+
+type ExpenseFieldType = int | Decimal | Currency | str | datetime | ExpenseCategory
 
 
 class ExpenseRepository(ABC):
@@ -49,18 +54,54 @@ class ExpenseRepository(ABC):
 
     @abstractmethod
     def search_by_category(self, category: ExpenseCategory) -> list[Expense]:
-        """Search for expenses by defined categories."""
+        """Retrieve expenses by a defined category."""
         ...
 
     @abstractmethod
     def search_by_dates(self, start: datetime, end: datetime) -> list[Expense]:
-        """Search for expenses by defined dates."""
+        """Retrieve expenses by a datetime range."""
         ...
 
     @abstractmethod
     def list_by_user(self, telegram_user_id: int) -> list[Expense]:
-        """Search for expenses by defined user."""
+        """Retrieve expenses by a specified user id."""
         ...
+
+    @abstractmethod
+    def get_monthly_totals(self, telegram_user_id: int) -> dict[str, Decimal]:
+        """Retrieve monthly totals by a specified user id."""
+        ...
+
+    @abstractmethod
+    def get_category_totals(self, telegram_user_id: int) -> dict[str, Decimal]:
+        """Retrieve defined category totals by a specified user id."""
+        ...
+
+
+def _sum_group_by_x(
+    repo: ExpenseRepository,
+    sort_key: Callable[[Expense], ExpenseFieldType],
+    group_key: Callable[[Expense], str],
+    user_id: int,
+) -> dict[str, Decimal]:
+    """Sort an ExpenseRepository's user's expenses, group them and sum each
+    group's amounts.
+    """
+    expenses = sorted(
+        repo.list_by_user(user_id),
+        key=sort_key,
+    )
+
+    totals: defaultdict[str, Decimal] = defaultdict(Decimal)
+    for expense in expenses:
+        totals[group_key(expense)] += expense.amount
+
+    return dict(totals)
+
+
+def category_str(expense: Expense) -> str:
+    """Handle None case for Expense.category."""
+    return str(expense.category) if expense.category else str(ExpenseCategory.OTHER)
 
 
 class InMemoryExpenseRepository(ExpenseRepository):
@@ -109,7 +150,7 @@ class InMemoryExpenseRepository(ExpenseRepository):
         del self._expenses[expense_id]
 
     def search_by_category(self, category: ExpenseCategory) -> list[Expense]:
-        """Search for expenses by defined categories."""
+        """Retrieve expenses by a defined category."""
         return [
             expense
             for expense in self._expenses.values()
@@ -117,7 +158,7 @@ class InMemoryExpenseRepository(ExpenseRepository):
         ]
 
     def search_by_dates(self, start: datetime, end: datetime) -> list[Expense]:
-        """Search for expenses by defined dates."""
+        """Retrieve expenses by a datetime range."""
         return [
             expense
             for expense in self._expenses.values()
@@ -125,12 +166,38 @@ class InMemoryExpenseRepository(ExpenseRepository):
         ]
 
     def list_by_user(self, telegram_user_id: int) -> list[Expense]:
-        """Search for expenses by defined user."""
+        """Retrieve expenses by a specified user id."""
         return [
             expense
             for expense in self._expenses.values()
             if expense.telegram_user_id == telegram_user_id
         ]
+
+    def get_monthly_totals(self, telegram_user_id: int) -> dict[str, Decimal]:
+        """Retrieve monthly totals by a specified user id.
+
+        Group expenses for the specified telegram_user_id by expense.date.strftime("%Y-%m")
+        Sum expense.amount for all items in each group (YYYY-MM)
+        """
+        return _sum_group_by_x(
+            repo=self,
+            sort_key=lambda expense: expense.date,
+            group_key=lambda expense: expense.date.strftime("%Y-%m"),
+            user_id=telegram_user_id,
+        )
+
+    def get_category_totals(self, telegram_user_id: int) -> dict[str, Decimal]:
+        """Retrieve defined category totals by a specified user id.
+
+        Group by expense.category (category name as string key)
+        Sum expense.amount for all items in each category
+        """
+        return _sum_group_by_x(
+            repo=self,
+            sort_key=lambda expense: expense.category or ExpenseCategory.OTHER,
+            group_key=category_str,
+            user_id=telegram_user_id,
+        )
 
 
 @final
@@ -364,7 +431,7 @@ class DBExpenseRepo(ExpenseRepository):
             session.commit()
 
     def search_by_category(self, category: ExpenseCategory) -> list[Expense]:
-        """Search for expenses by defined categories."""
+        """Retrieve expenses by a defined category."""
         self._require_open()
 
         statement = select(Expense).where(Expense.category == category)
@@ -375,7 +442,7 @@ class DBExpenseRepo(ExpenseRepository):
             return list(session.exec(statement))
 
     def search_by_dates(self, start: datetime, end: datetime) -> list[Expense]:
-        """Search for expenses by defined dates."""
+        """Retrieve expenses by a datetime range."""
         self._require_open()
 
         statement = select(Expense).where(Expense.date >= start, Expense.date < end)
@@ -386,7 +453,7 @@ class DBExpenseRepo(ExpenseRepository):
             return list(session.exec(statement))
 
     def list_by_user(self, telegram_user_id: int) -> list[Expense]:
-        """Search for expenses by defined user."""
+        """Retrieve expenses by a specified user id."""
         self._require_open()
 
         statement = select(Expense).where(Expense.telegram_user_id == telegram_user_id)
@@ -396,9 +463,36 @@ class DBExpenseRepo(ExpenseRepository):
         with Session(self._engine) as session:
             return list(session.exec(statement))
 
+    def get_monthly_totals(self, telegram_user_id: int) -> dict[str, Decimal]:
+        """Retrieve monthly totals by a specified user id.
+
+        Group expenses for the specified telegram_user_id by expense.date.strftime("%Y-%m")
+        Sum expense.amount for all items in each group (YYYY-MM)
+        """
+        return _sum_group_by_x(
+            repo=self,
+            sort_key=lambda expense: expense.date,
+            group_key=lambda expense: expense.date.strftime("%Y-%m"),
+            user_id=telegram_user_id,
+        )
+
+    def get_category_totals(self, telegram_user_id: int) -> dict[str, Decimal]:
+        """Retrieve defined category totals by a specified user id.
+
+        Group by expense.category (category name as string key)
+        Sum expense.amount for all items in each category
+        """
+        return _sum_group_by_x(
+            repo=self,
+            sort_key=lambda expense: expense.category or ExpenseCategory.OTHER,
+            group_key=category_str,
+            user_id=telegram_user_id,
+        )
+
 
 class DBUserPreferenceRepo:
     def __init__(self, db_url: str, session: Session | None = None):
+        self._engine: Engine | None
         self._owns_engine = session is None
         if session is None:
             self._engine = create_engine(db_url)
