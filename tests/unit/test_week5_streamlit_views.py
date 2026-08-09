@@ -75,6 +75,23 @@ class TestDashboardView:
         assert len(at.error) == 1
         assert "500" in at.error[0].value
 
+    def test_shows_warning_when_summary_is_not_found(self):
+        at = _run("""
+            from unittest.mock import MagicMock
+            from httpx import HTTPStatusError, Response, Request
+            from expenses_ai_agent.streamlit.views.dashboard import render
+            client = MagicMock()
+            response = MagicMock(spec=Response)
+            response.status_code = 404
+            client.get_summary.side_effect = HTTPStatusError(
+                "not found", request=MagicMock(spec=Request), response=response
+            )
+            render(client, user_id=12345)
+        """)
+        assert not at.exception
+        assert len(at.warning) == 1
+        assert "No expenses found" in at.warning[0].value
+
 
 class TestExpensesView:
     def test_renders_header(self):
@@ -130,6 +147,25 @@ class TestExpensesView:
         assert "del_7" in keys
         assert "del_9" in keys
 
+    def test_delete_button_calls_api_and_reruns(self):
+        at = _run("""
+            import streamlit as st
+            from unittest.mock import MagicMock
+            from expenses_ai_agent.streamlit.views.expenses import render
+            if "client" not in st.session_state:
+                client = MagicMock()
+                client.get_expenses.return_value = [
+                    {"id": 7, "category": "Food", "amount": "10.00", "currency": "EUR", "description": "Pizza"},
+                ]
+                st.session_state["client"] = client
+            render(st.session_state["client"], user_id=12345)
+        """)
+
+        at.button[0].click().run()
+
+        assert not at.exception
+        at.session_state["client"].delete_expense.assert_called_once_with(7)
+
     def test_shows_error_on_connection_failure(self):
         at = _run("""
             from unittest.mock import MagicMock
@@ -142,6 +178,32 @@ class TestExpensesView:
         assert not at.exception
         assert len(at.error) == 1
         assert "Cannot connect" in at.error[0].value
+
+    @pytest.mark.parametrize(
+        ("status_code", "message_type", "expected_text"),
+        [
+            (404, "warning", "No expenses found"),
+            (500, "error", "500"),
+        ],
+    )
+    def test_shows_http_status_error(self, status_code, message_type, expected_text):
+        at = _run(f"""
+            from unittest.mock import MagicMock
+            from httpx import HTTPStatusError, Response, Request
+            from expenses_ai_agent.streamlit.views.expenses import render
+            client = MagicMock()
+            response = MagicMock(spec=Response)
+            response.status_code = {status_code}
+            client.get_expenses.side_effect = HTTPStatusError(
+                "request failed", request=MagicMock(spec=Request), response=response
+            )
+            render(client, user_id=12345)
+        """)
+
+        messages = getattr(at, message_type)
+        assert not at.exception
+        assert len(messages) == 1
+        assert expected_text in messages[0].value
 
 
 class TestAddExpenseView:
@@ -192,6 +254,7 @@ class TestAddExpenseView:
                 "total_amount": "12.50",
                 "currency": "EUR",
                 "confidence": 0.95,
+                "comments": "Morning coffee",
             }
             render(client, user_id=12345)
         """)
@@ -200,6 +263,8 @@ class TestAddExpenseView:
         assert not at.exception
         assert len(at.success) == 1
         assert "Food" in at.success[0].value
+        assert len(at.info) == 1
+        assert at.info[0].value == "Morning coffee"
 
     def test_shows_error_on_connection_failure(self):
         at = _run("""
@@ -215,6 +280,34 @@ class TestAddExpenseView:
         assert not at.exception
         assert len(at.error) == 1
         assert "Cannot connect" in at.error[0].value
+
+    @pytest.mark.parametrize(
+        ("status_code", "message_type", "expected_text"),
+        [
+            (404, "warning", "No expenses found"),
+            (500, "error", "500"),
+        ],
+    )
+    def test_shows_http_status_error(self, status_code, message_type, expected_text):
+        at = _run(f"""
+            from unittest.mock import MagicMock
+            from httpx import HTTPStatusError, Response, Request
+            from expenses_ai_agent.streamlit.views.add_expense import render
+            client = MagicMock()
+            response = MagicMock(spec=Response)
+            response.status_code = {status_code}
+            client.classify_expense.side_effect = HTTPStatusError(
+                "request failed", request=MagicMock(spec=Request), response=response
+            )
+            render(client, user_id=12345)
+        """)
+        at.text_input[0].input("Coffee at Starbucks")
+        at.button[0].click().run()
+
+        messages = getattr(at, message_type)
+        assert not at.exception
+        assert len(messages) == 1
+        assert expected_text in messages[0].value
 
 
 class TestStreamlitApp:

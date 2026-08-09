@@ -367,3 +367,71 @@ class TestInMemoryExpenseRepository:
 
         assert len(results) == 2
         assert all(expense.telegram_user_id == 100 for expense in results)
+
+    def test_get_monthly_totals_groups_expenses_for_user(self, repo):
+        repo.add(
+            Expense(
+                amount=Decimal("10.00"),
+                date=datetime(2024, 1, 5, tzinfo=timezone.utc),
+                telegram_user_id=100,
+            )
+        )
+        repo.add(
+            Expense(
+                amount=Decimal("15.00"),
+                date=datetime(2024, 1, 20, tzinfo=timezone.utc),
+                telegram_user_id=100,
+            )
+        )
+        repo.add(
+            Expense(
+                amount=Decimal("5.00"),
+                date=datetime(2024, 2, 1, tzinfo=timezone.utc),
+                telegram_user_id=100,
+            )
+        )
+        repo.add(
+            Expense(
+                amount=Decimal("99.00"),
+                date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                telegram_user_id=200,
+            )
+        )
+
+        totals = repo.get_monthly_totals(telegram_user_id=100)
+
+        assert totals == {
+            "2024-01": Decimal("25.00"),
+            "2024-02": Decimal("5.00"),
+        }
+
+    def test_get_category_totals_groups_uncategorized_as_other(self, repo):
+        repo.add(
+            Expense(
+                amount=Decimal("10.00"),
+                category=ExpenseCategory.FOOD,
+                telegram_user_id=100,
+            )
+        )
+        repo.add(
+            Expense(
+                amount=Decimal("5.00"),
+                category=ExpenseCategory.FOOD,
+                telegram_user_id=100,
+            )
+        )
+        repo.add(Expense(amount=Decimal("3.00"), telegram_user_id=100))
+        repo.add(
+            Expense(
+                amount=Decimal("99.00"),
+                category=ExpenseCategory.FOOD,
+                telegram_user_id=200,
+            )
+        )
+
+        totals = repo.get_category_totals(telegram_user_id=100)
+
+        assert totals == {
+            str(ExpenseCategory.FOOD): Decimal("15.00"),
+            str(ExpenseCategory.OTHER): Decimal("3.00"),
+        }

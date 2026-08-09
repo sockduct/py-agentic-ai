@@ -1,0 +1,39 @@
+# Version control
+.git
+.gitignore
+
+# Virtual environments
+.venv
+venv/
+.python-version
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.ruff_cache
+
+# IDE files
+.vscode
+.idea
+*.swp
+
+# Local data and secrets
+.env
+*.db
+.coverage
+
+# Documentation
+curriculum/
+docs/
+*.md
+!README.md
+
+# Build artifacts
+*.egg-info
+dist/
+build/
+
+# Temporary stuff
+tmp/
